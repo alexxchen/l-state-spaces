@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         wandb==0.24.2 \
         pytorch-lightning==1.5.10.post0 \
         torchmetrics==1.5.2 \
-        'flash-linear-attention @ git+https://github.com/fla-org/flash-linear-attention.git@0.5.0' \
+        'flash-linear-attention @ git+https://github.com/fla-org/flash-linear-attention.git@v0.5.0' \
         --no-cache-dir
 
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -38,3 +38,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install snntorch==0.9.4 cupy-cuda12x==13.5.1 && \
     python3 -m pip install https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/causal_conv1d-1.6.1+cu12torch2.7cxx11abiTRUE-cp311-cp311-linux_x86_64.whl && \
     python3 -m pip freeze
+
+COPY extensions/cauchy /tmp/extensions/cauchy
+RUN cd /tmp/extensions/cauchy && \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0;12.0" python3 setup.py install

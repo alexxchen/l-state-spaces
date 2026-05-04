@@ -4,7 +4,7 @@ from torch.utils.cpp_extension import CppExtension, CUDAExtension, BuildExtensio
 from torch.utils.cpp_extension import CUDA_HOME
 
 ext_modules = []
-if torch.cuda.is_available() and CUDA_HOME is not None:
+if CUDA_HOME is not None:
     extension = CUDAExtension(
         'cauchy_mult', [
             'cauchy.cpp',
