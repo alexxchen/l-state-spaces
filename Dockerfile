@@ -30,11 +30,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         wandb==0.24.2 \
         pytorch-lightning==1.5.10.post0 \
         torchmetrics==1.5.2 \
-        'flash-linear-attention @ git+https://github.com/fla-org/flash-linear-attention.git@0.5.1' \
+        'flash-linear-attention @ git+https://github.com/fla-org/flash-linear-attention.git@0.5.0' \
         --no-cache-dir
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install git+https://github.com/fangwei123456/spikingjelly.git && \
     python3 -m pip install snntorch==0.9.4 cupy-cuda12x==13.5.1 && \
-    python3 -m pip install https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/causal_conv1d-1.6.1+cu12torch2.7cxx11abiTRUE-cp310-cp310-linux_x86_64.whl && \
+    python3 -m pip install https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/causal_conv1d-1.6.1+cu12torch2.7cxx11abiTRUE-cp311-cp311-linux_x86_64.whl && \
     python3 -m pip freeze
