@@ -1,4 +1,4 @@
-$Experiment = if ($env:EXPERIMENT) { $env:EXPERIMENT } else { "s4-lra-cifar-new" }
+$Experiment = if ($env:EXPERIMENT) { $env:EXPERIMENT } else { "fla-deltanet-listops" }
 $RunGroup = if ($env:RUN_GROUP) { $env:RUN_GROUP } else { $Experiment }
 $RunId = if ($env:RUN_ID) { $env:RUN_ID } else { "$RunGroup-$(Get-Date -Format 'yyyyMMdd_HHmmss')" }
 $RootDir = if ($env:ROOT_DIR) { $env:ROOT_DIR } else { $PWD.Path }

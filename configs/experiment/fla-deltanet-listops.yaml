@@ -20,7 +20,7 @@ loader:
 
 optimizer:
   lr: 0.001
-  weight_decay: 0.05
+  weight_decay: 0.0
 
 scheduler:
   num_training_steps: 80000

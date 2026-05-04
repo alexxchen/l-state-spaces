@@ -10,19 +10,20 @@ output: auto
 torch_dtype: null
 autocast_dtype: bfloat16
 output_dtype: float32
-pad_token_id: 0
+pad_token_id: null
 use_cache: false
 freeze: false
 gradient_checkpointing: false
 trust_remote_code: false
 config_kwargs:
   vocab_size: ${dataset.max_vocab}
-  hidden_size: 128
-  state_size: 64
+  head_dim: 16
+  hidden_size: 16
+  state_size: 16
   num_hidden_layers: 6
   max_position_embeddings: ${dataset.l_max}
-  pad_token_id: 0
-  bos_token_id: 1
-  eos_token_id: 2
+  pad_token_id: null
+  bos_token_id: null
+  eos_token_id: null
   use_cache: false
 model_kwargs: {}
