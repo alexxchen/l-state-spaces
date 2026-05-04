@@ -4,6 +4,8 @@ data.tar.gz
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 *.lprof
+*.log
+*.out
 
 .DS_Store
 .idea/

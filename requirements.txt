@@ -14,7 +14,8 @@ omegaconf==2.3.0
 wandb==0.24.2
 einops==0.8.1
 opt_einsum==3.4.0
-cmake==4.3.2
+# PyKeOps 1.5 is not compatible with CMake 4.x.
+cmake==3.31.10
 datasets==3.1.0
 transformers==4.46.3
 pytorch-fast-transformers==0.4.0
@@ -27,4 +28,9 @@ torchvision==0.11.0+cu111
 torchaudio==0.10.0+cu111
 torchtext==0.11.0
 torchmetrics==1.5.2
-# pykeops==1.5 # Install to enable fast Cauchy kernel through pykeops
+
+# PyKeOps enables the fast Cauchy kernel path.
+# For GPU kernels, the environment also needs a local CUDA compiler:
+#   conda install -c conda-forge cudatoolkit-dev=11.1.1
+# CUDA 11.1 nvcc requires a GCC/G++ host compiler <= 10, e.g. gcc-9 and g++-9.
+pykeops==1.5
