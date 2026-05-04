@@ -1,6 +1,7 @@
 # _target_: pytorch_lightning.Trainer
 
 gpus: 1 # set `1` to train on GPU, `0` to train on CPU only
+precision: 32 # set to bf16/fp16 when a backbone requires mixed precision kernels
 accumulate_grad_batches: 1
 max_epochs: 200
 # accelerator: ddp # controlled by train.ddp instead

@@ -21,6 +21,7 @@ scheduler = {
 model = {
     "model": "src.models.sequence.SequenceModel",
     "unet": "src.models.sequence.SequenceUNet",
+    "hf": "src.models.baselines.hf.HFModelAdapter",
     "lstm": "src.models.sequence.rnns.lstm.TorchLSTM",
     "convnet": "src.models.sequence.convnet",
     "ckconv": "src.models.baselines.ckconv.ClassificationCKCNN",

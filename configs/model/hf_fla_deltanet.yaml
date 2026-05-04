@@ -1,0 +1,30 @@
+_name_: hf
+pretrained_model_name_or_path: null
+auto_class: AutoModel
+imports:
+  - fla.models.delta_net
+init_strategy: from_config
+config_name: null
+config_class: fla.models.delta_net.DeltaNetConfig
+output: auto
+torch_dtype: null
+autocast_dtype: bfloat16
+output_dtype: float32
+pad_token_id: null
+use_cache: false
+freeze: false
+gradient_checkpointing: false
+trust_remote_code: false
+config_kwargs:
+  vocab_size: 256
+  hidden_size: 128
+  num_hidden_layers: 6
+  num_heads: 4
+  max_position_embeddings: 1024
+  pad_token_id: null
+  bos_token_id: null
+  eos_token_id: null
+  use_cache: false
+  attn_mode: chunk
+  use_short_conv: false
+model_kwargs: {}

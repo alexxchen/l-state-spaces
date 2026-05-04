@@ -1,0 +1,28 @@
+_name_: hf
+pretrained_model_name_or_path: null
+auto_class: AutoModel
+imports:
+  - fla.models.mamba2
+init_strategy: from_config
+config_name: null
+config_class: fla.models.mamba2.Mamba2Config
+output: auto
+torch_dtype: null
+autocast_dtype: bfloat16
+output_dtype: float32
+pad_token_id: 0
+use_cache: false
+freeze: false
+gradient_checkpointing: false
+trust_remote_code: false
+config_kwargs:
+  vocab_size: ${dataset.max_vocab}
+  hidden_size: 128
+  state_size: 64
+  num_hidden_layers: 6
+  max_position_embeddings: ${dataset.l_max}
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  use_cache: false
+model_kwargs: {}

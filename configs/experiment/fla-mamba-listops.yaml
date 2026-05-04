@@ -1,0 +1,32 @@
+# @package _global_
+defaults:
+  - /pipeline: listops
+  - /model: hf_fla_mamba
+  - override /scheduler: cosine_warmup
+
+encoder: hf
+
+model:
+  config_kwargs:
+    num_hidden_layers: 8
+    state_size: 64
+
+decoder:
+  mode: pool
+
+loader:
+  batch_size: 50
+
+optimizer:
+  lr: 0.01
+  weight_decay: 0.05
+
+scheduler:
+  num_training_steps: 80000
+  # patience: 5
+
+trainer:
+  max_epochs: 40
+
+train:
+  seed: 2222

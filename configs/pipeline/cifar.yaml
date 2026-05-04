@@ -11,7 +11,7 @@ train:
   monitor: val/accuracy # Needed for plateau scheduler
   mode: max
 
-encoder: linear
+encoder: embedding
 
 decoder:
   _name_: sequence

@@ -1,0 +1,33 @@
+# @package _global_
+defaults:
+  - /pipeline: listops
+  - /model: hf_fla_deltanet
+  - override /scheduler: cosine_warmup
+
+encoder: hf
+
+model:
+  config_kwargs:
+    num_hidden_layers: 8
+    vocab_size: 20
+    max_position_embeddings: ${dataset.l_max}
+
+decoder:
+  mode: pool
+
+loader:
+  batch_size: 50
+
+optimizer:
+  lr: 0.001
+  weight_decay: 0.05
+
+scheduler:
+  num_training_steps: 80000
+  # patience: 5
+
+trainer:
+  max_epochs: 40
+
+train:
+  seed: 2222

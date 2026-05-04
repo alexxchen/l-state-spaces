@@ -17,7 +17,10 @@ import torchvision
 from PIL import Image  # Only used for Pathfinder
 from einops.layers.torch import Rearrange, Reduce
 from einops import rearrange
-import torchtext
+try:
+    import torchtext
+except ImportError:
+    torchtext = None
 from datasets import load_dataset, DatasetDict, Value
 
 # from pytorch_lightning import LightningDataModule
@@ -31,6 +34,93 @@ if (default_data_path := os.getenv("DATA_PATH")) is None:
     default_data_path = default_data_path / "data"
 else:
     default_data_path = Path(default_data_path).absolute()
+
+
+class SimpleVocab:
+    """Small torchtext-like vocab used when torchtext is unavailable."""
+
+    def __init__(self, stoi, size=None):
+        self.stoi = dict(stoi)
+        self.size = len(self.stoi) if size is None else size
+        self.default_index = None
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, token):
+        if token in self.stoi:
+            return self.stoi[token]
+        if self.default_index is not None:
+            return self.default_index
+        raise KeyError(token)
+
+    def __call__(self, tokens):
+        return [self[token] for token in tokens]
+
+    def set_default_index(self, index):
+        self.default_index = index
+
+
+def _require_torchtext(context):
+    if torchtext is None:
+        raise ImportError(
+            f"{context} requires `torchtext`, but it is not installed in the current environment."
+        )
+
+
+def _special_tokens(append_bos=False, append_eos=False):
+    return (
+        ["<pad>", "<unk>"]
+        + (["<bos>"] if append_bos else [])
+        + (["<eos>"] if append_eos else [])
+    )
+
+
+def _build_vocab_from_iterator(iterator, specials=(), min_freq=1):
+    if torchtext is not None:
+        return torchtext.vocab.build_vocab_from_iterator(
+            iterator,
+            specials=specials,
+            min_freq=min_freq,
+        )
+
+    counts = {}
+    for tokens in iterator:
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
+
+    stoi = {}
+    for token in specials:
+        if token not in stoi:
+            stoi[token] = len(stoi)
+
+    for token, count in counts.items():
+        if count >= min_freq and token not in stoi:
+            stoi[token] = len(stoi)
+
+    return SimpleVocab(stoi)
+
+
+def _infer_vocab_size(dataset, columns):
+    vocab_size = 0
+    for split in dataset.values():
+        for column in columns:
+            for token_ids in split[column]:
+                if torch.is_tensor(token_ids):
+                    token_ids = token_ids.tolist()
+                if len(token_ids) == 0:
+                    continue
+                vocab_size = max(vocab_size, max(token_ids) + 1)
+    return vocab_size
+
+
+def _rebuild_cached_vocab(dataset, columns, append_bos=False, append_eos=False):
+    specials = {token: idx for idx, token in enumerate(_special_tokens(append_bos, append_eos))}
+    vocab_size = max(len(specials), _infer_vocab_size(dataset, columns))
+    vocab = SimpleVocab(specials, size=vocab_size)
+    if "<unk>" in specials:
+        vocab.set_default_index(specials["<unk>"])
+    return vocab
 
 
 class TBPTTDataLoader(torch.utils.data.DataLoader):
@@ -403,6 +493,10 @@ class CIFAR10(SequenceDataset):
         else:
             assert not self.tokenize
             return 3
+
+    @property
+    def n_tokens(self):
+        return 256 if self.grayscale and self.tokenize else None
 
     def setup(self):
         if self.grayscale:
@@ -842,6 +936,7 @@ class IMDB(SequenceDataset):
         dataset = load_dataset(self._name_, cache_dir=self.data_dir)
         dataset = DatasetDict(train=dataset["train"], test=dataset["test"])
         if self.level == "word":
+            _require_torchtext("IMDB word-level tokenization")
             tokenizer = torchtext.data.utils.get_tokenizer(
                 "spacy", language="en_core_web_sm"
             )
@@ -857,14 +952,10 @@ class IMDB(SequenceDataset):
             load_from_cache_file=False,
             num_proc=max(self.n_workers, 1),
         )
-        vocab = torchtext.vocab.build_vocab_from_iterator(
+        vocab = _build_vocab_from_iterator(
             dataset["train"]["tokens"],
             min_freq=self.min_freq,
-            specials=(
-                ["<pad>", "<unk>"]
-                + (["<bos>"] if self.append_bos else [])
-                + (["<eos>"] if self.append_eos else [])
-            ),
+            specials=_special_tokens(self.append_bos, self.append_eos),
         )
         vocab.set_default_index(vocab["<unk>"])
 
@@ -904,8 +995,21 @@ class IMDB(SequenceDataset):
         dataset = DatasetDict.load_from_disk(str(cache_dir))
         with open(cache_dir / "tokenizer.pkl", "rb") as f:
             tokenizer = pickle.load(f)
-        with open(cache_dir / "vocab.pkl", "rb") as f:
-            vocab = pickle.load(f)
+        try:
+            with open(cache_dir / "vocab.pkl", "rb") as f:
+                vocab = pickle.load(f)
+        except Exception as exc:
+            logger.warning(
+                "Falling back to a lightweight cached vocab for IMDB because "
+                "vocab.pkl could not be loaded: %s",
+                exc,
+            )
+            vocab = _rebuild_cached_vocab(
+                dataset,
+                columns=["input_ids"],
+                append_bos=self.append_bos,
+                append_eos=self.append_eos,
+            )
         return dataset, tokenizer, vocab
 
     @property
@@ -927,6 +1031,7 @@ class TabularDataset(torch.utils.data.Dataset):
         """
         if csv_reader_params is None:
             csv_reader_params = {}
+        _require_torchtext("TabularDataset")
         format = format.lower()
         assert format in ["tsv", "csv"]
         with io.open(os.path.expanduser(path), encoding="utf8") as f:
@@ -1057,13 +1162,9 @@ class ListOps(SequenceDataset):
             load_from_cache_file=False,
             num_proc=max(self.n_workers, 1),
         )
-        vocab = torchtext.vocab.build_vocab_from_iterator(
+        vocab = _build_vocab_from_iterator(
             dataset["train"]["tokens"],
-            specials=(
-                ["<pad>", "<unk>"]
-                + (["<bos>"] if self.append_bos else [])
-                + (["<eos>"] if self.append_eos else [])
-            ),
+            specials=_special_tokens(self.append_bos, self.append_eos),
         )
         vocab.set_default_index(vocab["<unk>"])
 
@@ -1103,8 +1204,21 @@ class ListOps(SequenceDataset):
         dataset = DatasetDict.load_from_disk(str(cache_dir))
         with open(cache_dir / "tokenizer.pkl", "rb") as f:
             tokenizer = pickle.load(f)
-        with open(cache_dir / "vocab.pkl", "rb") as f:
-            vocab = pickle.load(f)
+        try:
+            with open(cache_dir / "vocab.pkl", "rb") as f:
+                vocab = pickle.load(f)
+        except Exception as exc:
+            logger.warning(
+                "Falling back to a lightweight cached vocab for ListOps because "
+                "vocab.pkl could not be loaded: %s",
+                exc,
+            )
+            vocab = _rebuild_cached_vocab(
+                dataset,
+                columns=["input_ids"],
+                append_bos=self.append_bos,
+                append_eos=self.append_eos,
+            )
         return dataset, tokenizer, vocab
 
 
@@ -1374,13 +1488,9 @@ class AAN(SequenceDataset):
             load_from_cache_file=False,
             num_proc=max(self.n_workers, 1),
         )
-        vocab = torchtext.vocab.build_vocab_from_iterator(
+        vocab = _build_vocab_from_iterator(
             dataset["train"]["tokens1"] + dataset["train"]["tokens2"],
-            specials=(
-                ["<pad>", "<unk>"]
-                + (["<bos>"] if self.append_bos else [])
-                + (["<eos>"] if self.append_eos else [])
-            ),
+            specials=_special_tokens(self.append_bos, self.append_eos),
         )
         vocab.set_default_index(vocab["<unk>"])
 
@@ -1422,8 +1532,21 @@ class AAN(SequenceDataset):
         dataset = DatasetDict.load_from_disk(str(cache_dir))
         with open(cache_dir / "tokenizer.pkl", "rb") as f:
             tokenizer = pickle.load(f)
-        with open(cache_dir / "vocab.pkl", "rb") as f:
-            vocab = pickle.load(f)
+        try:
+            with open(cache_dir / "vocab.pkl", "rb") as f:
+                vocab = pickle.load(f)
+        except Exception as exc:
+            logger.warning(
+                "Falling back to a lightweight cached vocab for AAN because "
+                "vocab.pkl could not be loaded: %s",
+                exc,
+            )
+            vocab = _rebuild_cached_vocab(
+                dataset,
+                columns=["input_ids1", "input_ids2"],
+                append_bos=self.append_bos,
+                append_eos=self.append_eos,
+            )
         return dataset, tokenizer, vocab
 
 

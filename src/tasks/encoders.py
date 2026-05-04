@@ -183,6 +183,50 @@ class OneHotEncoder(Encoder):
         return (F.one_hot(x.squeeze(-1), self.d_model).float(),)
 
 
+class HuggingFaceEncoder(Encoder):
+    """Prepare Hugging Face-style inputs while preserving the repo's tuple API."""
+
+    def __init__(self, pad_token_id=None):
+        super().__init__()
+        self.pad_token_id = pad_token_id
+
+    def forward(self, x, len_batch=None, *args, **kwargs):
+        attention_mask = None
+
+        if isinstance(len_batch, int) and x.ndim >= 2:
+            attention_mask = torch.ones(
+                x.size(0),
+                x.size(1) if x.ndim == 2 else x.size(-2),
+                device=x.device,
+                dtype=torch.long,
+            )
+        elif torch.is_tensor(len_batch) and len_batch.ndim == 0 and x.ndim >= 2:
+            attention_mask = torch.ones(
+                x.size(0),
+                x.size(1) if x.ndim == 2 else x.size(-2),
+                device=x.device,
+                dtype=torch.long,
+            )
+        elif torch.is_tensor(len_batch) and len_batch.ndim == 1 and x.ndim >= 2:
+            seq_len = x.size(1) if x.ndim == 2 else x.size(-2)
+            positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+            attention_mask = positions < len_batch.unsqueeze(1)
+        elif (
+            self.pad_token_id is not None
+            and torch.is_tensor(x)
+            and not torch.is_floating_point(x)
+        ):
+            ids = x.squeeze(-1) if x.ndim == 3 and x.size(-1) == 1 else x
+            attention_mask = ids.ne(self.pad_token_id)
+
+        if torch.is_tensor(x) and not torch.is_floating_point(x):
+            x = x.long()
+
+        if attention_mask is None:
+            return (x,)
+        return x, attention_mask.long()
+
+
 # For every type of encoder/decoder, specify:
 # - constructor class
 # - list of attributes to grab from dataset
@@ -191,6 +235,7 @@ class OneHotEncoder(Encoder):
 registry = {
     "id": U.Identity,
     "embedding": U.Embedding,
+    "hf": HuggingFaceEncoder,
     "linear": U.Linear,
     "position": PositionalEncoder,
     "class": ClassEmbedding,
@@ -209,6 +254,7 @@ dataset_attrs = {
 }
 model_attrs = {
     "embedding": ["d_model"],
+    "hf": ["pad_token_id"],
     "linear": ["d_model"],
     "position": ["d_model"],
     "class": ["d_model"],
