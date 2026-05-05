@@ -52,7 +52,9 @@ wandb:
   project: hippo
   group: ""
   job_type: training
-  mode: online # choices=['online', 'offline', 'disabled']
+  # Respect WANDB_MODE from the environment (e.g. set by slurm scripts).
+  # If unset, default to online.
+  mode: ${oc.env:WANDB_MODE,online} # choices=['online', 'offline', 'disabled']
   save_dir: null
   id: null # pass correct id to resume experiment!
   # Below options should not need to be specified
