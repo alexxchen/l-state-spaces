@@ -16,12 +16,13 @@ freeze: false
 gradient_checkpointing: false
 trust_remote_code: false
 config_kwargs:
-  vocab_size: ${dataset.max_vocab}
-  head_dim: 16
-  hidden_size: 16
-  state_size: 16
+  chunk_size: 64
+  vocab_size: 256
+  head_dim: 32
+  hidden_size: 128
+  state_size: 128
   num_hidden_layers: 6
-  max_position_embeddings: ${dataset.l_max}
+  max_position_embeddings: 1024
   pad_token_id: null
   bos_token_id: null
   eos_token_id: null

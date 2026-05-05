@@ -8,26 +8,32 @@ encoder: hf
 
 model:
   config_kwargs:
+    hidden_size: 128
     num_hidden_layers: 8
-    vocab_size: 20
+    num_heads: 4
+    vocab_size: ${dataset.max_vocab}
     max_position_embeddings: ${dataset.l_max}
+    attn_mode: chunk
+    use_short_conv: true
 
 decoder:
-  mode: pool
+  mode: last
 
 loader:
   batch_size: 50
 
 optimizer:
   lr: 0.001
-  weight_decay: 0.0
+  weight_decay: 0.01
 
 scheduler:
+  num_warmup_steps: 1000
   num_training_steps: 80000
   # patience: 5
 
 trainer:
   max_epochs: 40
+  gradient_clip_val: 1.0
 
 train:
   seed: 2222
