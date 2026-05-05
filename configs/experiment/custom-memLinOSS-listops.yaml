@@ -1,14 +1,14 @@
 # @package _global_
 defaults:
   - /pipeline: listops
-  - /model: hf_fla_deltanet
+  - /model: hf_custom_memLinOSS
   - override /scheduler: cosine_warmup
 
 encoder: hf
 
 model:
   config_kwargs:
-    hidden_size: 128
+    hidden_size: 64
     num_hidden_layers: 8
     num_heads: 4
     vocab_size: ${dataset.max_vocab}

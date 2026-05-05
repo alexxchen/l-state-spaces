@@ -17,8 +17,9 @@ import src.models.nn.utils as U
 from src.dataloaders import SequenceDataset  # TODO make registry
 from tqdm.auto import tqdm
 
-log = src.utils.train.get_logger(__name__)
+import custom_models
 
+log = src.utils.train.get_logger(__name__)
 
 class SequenceLightningModule(pl.LightningModule):
     def __init__(self, config):
