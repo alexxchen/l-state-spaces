@@ -74,7 +74,8 @@ class MemLinOSSBlock(GradientCheckpointingLayer):
                 norm_eps=config.norm_eps,
                 layer_idx=layer_idx,
                 delta_t=config.delta_t,
-                use_damping=config.use_damping
+                use_damping=config.use_damping,
+                update_rule=config.update_rule
             )
         self.mlp_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
         self.mlp = DeltaNetMLP(

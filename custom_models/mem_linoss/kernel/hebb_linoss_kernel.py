@@ -555,8 +555,7 @@ class Kernel_RNN(torch.autograd.Function):
             None,
         )
 
-def fused_chunk_linoss(q, k, v, beta, y0, z0, A, B, dt, chunk_size):
-    # TODO: fuse the einsums into the kernel
+def fused_hebb_linoss(q, k, v, beta, y0, z0, A, B, dt, chunk_size):
     batch_size, T, h, d = q.shape
     orig_dtype = q.dtype
     scale = k.shape[-1] ** -0.5
@@ -567,6 +566,7 @@ def fused_chunk_linoss(q, k, v, beta, y0, z0, A, B, dt, chunk_size):
     u = torch.einsum('bthd,bthe->bthde', k, v)
     u = u * beta_scale.unsqueeze(-1)
 
+    # flat extra dim
     u = u.reshape(batch_size, T, h * d * d)
 
     y0 = y0.reshape(batch_size, h * d * d)

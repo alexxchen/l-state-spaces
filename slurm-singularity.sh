@@ -1,9 +1,9 @@
 #! /bin/bash
 #SBATCH --job-name=training
-#SBATCH --partition=gpu
+#SBATCH --partition=pod
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:nvidia_h100_nvl:1
+#SBATCH --gres=gpu:nvidia_h200:1
 #SBATCH --cpus-per-task=28
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00

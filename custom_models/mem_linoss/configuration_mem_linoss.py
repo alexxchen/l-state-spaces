@@ -48,7 +48,8 @@ class MemLinOSSConfig(PretrainedConfig):
         use_l2warp: bool = False,
         vocab_size: int = 32000,
         delta_t: float = 1.0,
-        use_damping: bool = False,
+        use_damping: bool = True,
+        update_rule: str = 'hebb',
         **kwargs
     ):
         self.attn_mode = attn_mode
@@ -84,6 +85,7 @@ class MemLinOSSConfig(PretrainedConfig):
         self.vocab_size = vocab_size
         self.delta_t = delta_t
         self.use_damping = use_damping
+        self.update_rule = update_rule
 
         if fuse_cross_entropy and fuse_linear_cross_entropy:
             raise ValueError(

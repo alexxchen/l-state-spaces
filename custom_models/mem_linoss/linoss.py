@@ -4,7 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from contextlib import nullcontext
 from fla.modules.l2norm import l2norm
-from .kernel.linoss_kernel import fused_chunk_linoss
+from .kernel.hebb_linoss_kernel import fused_hebb_linoss
+from .kernel.delta_linoss_kernel import fused_delta_linoss
 
 class LinOSS(nn.Module):
     def __init__(self, num_heads: int, 
@@ -13,6 +14,7 @@ class LinOSS(nn.Module):
                  damping: bool, 
                  grad_clip_scale: float,
                  y_init: str,
+                 update_rule: str,
                  monitor: bool = True):
 
         super().__init__()
@@ -22,7 +24,15 @@ class LinOSS(nn.Module):
         self.head_dim = head_dim
         self.grad_clip_scale = grad_clip_scale
         self.y_init = y_init
+        self.update_rule = update_rule
         self.monitor = monitor  # Set to False for torch.compile compatibility
+
+        if update_rule == 'hebb':
+            print("Using hebbian rule")
+            self.kernel_func = fused_hebb_linoss
+        elif update_rule == 'delta':
+            print("Using delta rule")
+            self.kernel_func = fused_delta_linoss
 
         # Learnable initial state for y (MAML-style: learn the best initialization)
         # 'zero-fix': fixed zero init (not learnable)
@@ -140,7 +150,7 @@ class LinOSS(nn.Module):
         damping_term = nn.functional.sigmoid(damping_param) if self.damping else damping_param
         damping_term = damping_term / self.delta_t
 
-        output, y, z = fused_chunk_linoss(
+        output, y, z = self.kernel_func(
             k=k,
             q=q,
             v=v,
@@ -200,9 +210,10 @@ class LinOSS(nn.Module):
             _q = q[:, t, :, :]
             _k = k[:, t, :, :]
             _v = v[:, t, :, :].clone()
-            beta_i = beta[:, t, :]  # [batch, num_heads, 1]
+            beta_i = beta[:, t, :]  # [batch, num_heads, 1, 1]
 
-            # _v = _v - torch.einsum('bhd,bhde->bhe', _k, y)
+            if self.update_rule == 'delta':
+                _v = _v - torch.einsum('bhd,bhde->bhe', _k, y)
             # u = kv^T = einsum('bhd,bhrd,bhre->bhdr', k, y, v) -> [batch, num_heads, head_dim, head_dim]
             u_t = torch.einsum('bhd,bhe->bhde', _k, _v)
 

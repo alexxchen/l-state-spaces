@@ -27,6 +27,8 @@ config_kwargs:
   use_cache: false
   attn_mode: chunk
   use_short_conv: true
+  use_beta: true
+  base_beta: 0.1
   delta_t: 1.0
-  use_damping: false
+  use_damping: true
 model_kwargs: {}
