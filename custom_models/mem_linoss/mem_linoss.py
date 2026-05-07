@@ -101,7 +101,8 @@ class MemLinOSS(nn.Module):
         qk_norm: str = 'l2',
         norm_eps: float = 1e-5,
         delta_t: float = 1.0,
-        use_damping: bool = False,
+        use_damping: bool = True,
+        update_rule: str = 'hebb',
         **kwargs
     ) -> MLPNet:
         super().__init__()
@@ -134,6 +135,7 @@ class MemLinOSS(nn.Module):
 
         self.delta_t = delta_t
         self.use_damping = use_damping
+        self.update_rule = update_rule
 
         if mode == 'fused_chunk':
             raise NotImplementedError("fused_chunk_delta_rule is now deprecated. Please use `chunk_delta_rule` instead.")
@@ -151,7 +153,8 @@ class MemLinOSS(nn.Module):
             delta_t=self.delta_t,
             damping=self.use_damping,
             grad_clip_scale=1.0,
-            y_init='zero-fix'
+            y_init='zero-fix',
+            update_rule = self.update_rule
         )
 
         self.use_beta = use_beta
