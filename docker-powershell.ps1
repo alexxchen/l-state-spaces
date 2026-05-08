@@ -22,4 +22,4 @@ docker run --rm -d `
     --env NGPU=1 `
     --env LOG_RANK=0 `
     alecchen123/lra:fla `
-    bash -lc 'python -m train wandb.project=lra wandb.group="$RUN_GROUP" wandb.id="$RUN_ID" experiment="$EXPERIMENT" > "$LOG_FILE" 2>&1'
+    bash -lc 'python -m train wandb.project=lra wandb.group="$RUN_GROUP" wandb.id="$RUN_ID" experiment="$EXPERIMENT"> "$LOG_FILE" 2>&1'

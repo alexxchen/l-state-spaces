@@ -101,8 +101,8 @@ class LinOSS(nn.Module):
             z = torch.zeros(batch_size, self.num_heads,  self.head_dim, self.head_dim, device=device, dtype=dtype) 
         else:
             # Learnable initialization (MAML-style)
-            y = self.y_init_param.unsqueeze(0).expand(batch_size, -1, -1).clone().to(dtype)
-            z = self.z_init.unsqueeze(0).expand(batch_size, -1, -1).clone().to(dtype) 
+            y = self.y_init_param.unsqueeze(0).expand(batch_size, -1, -1, -1).clone().to(dtype)
+            z = self.z_init.unsqueeze(0).expand(batch_size, -1, -1, -1).clone().to(dtype)
         return y, z
 
     def _resolve_initial_state(self, initial_state, batch_size, device, dtype):
@@ -134,14 +134,20 @@ class LinOSS(nn.Module):
         return y.to(device=device, dtype=dtype), z.to(device=device, dtype=dtype)
 
     def chunk_forward(self, q, k, v, beta, chunk_size, initial_state=None, output_final_state=False, cu_seqlens=None, use_qk_l2norm_in_kernel=False):
-        device_type = q.device.type
         orig_dtype = q.dtype
 
         if use_qk_l2norm_in_kernel:
             q = l2norm(q)
             k = l2norm(k)
 
-        batch_size, seq_len, _, _ = q.shape
+        # varlen inputs from mem_linoss come as (1, N, H, D) / (1, N, H) due to unsqueeze(0)
+        # in get_unpad_data path; squeeze to (N, H, D) / (N, H) for the kernel
+        packed = cu_seqlens is not None and q.dim() == 4
+        if packed:
+            q, k, v = q.squeeze(0), k.squeeze(0), v.squeeze(0)
+            beta = beta.squeeze(0) if beta.dim() == 3 else beta
+
+        batch_size = cu_seqlens.numel() - 1 if cu_seqlens is not None else q.shape[0]
 
         y0, z0 = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
@@ -151,27 +157,31 @@ class LinOSS(nn.Module):
         damping_term = damping_term / self.delta_t
 
         output, y, z = self.kernel_func(
-            k=k,
             q=q,
+            k=k,
             v=v,
             beta=beta,
             y0=y0,
             z0=z0,
             A=osc_term.float(),
             B=damping_term.float(),
+            cu_seqlens=cu_seqlens,
             dt=self.delta_t,
             chunk_size=chunk_size,
         )
+
+        if packed:
+            output = output.unsqueeze(0)
 
         final_state = None
         if output_final_state:
             final_state = (y, z)
         return output.to(orig_dtype), final_state
 
-    def recurrent_forward(self, 
-                q, 
-                k, 
-                v, 
+    def recurrent_forward(self,
+                q,
+                k,
+                v,
                 beta,
                 initial_state=None,
                 output_final_state=False,
@@ -179,55 +189,56 @@ class LinOSS(nn.Module):
                 use_qk_l2norm_in_kernel=False
                 ):
 
-        device_type = q.device.type
-
         if use_qk_l2norm_in_kernel:
             q = l2norm(q)
             k = l2norm(k)
 
-        batch_size, T, h, d = q.shape
+        # varlen packed: q/k/v are (N, H, D); cu_seqlens is (Bsz+1,)
+        batch_size = cu_seqlens.numel() - 1 if cu_seqlens is not None else q.shape[0]
 
         orig_dtype = q.dtype
         q, k, v, beta = map(lambda x: x.float(), [q, k, v, beta])
         scale = k.shape[-1] ** -0.5
         q = q * scale
 
-        # Get initial states using learnable or zero initialization
         y, z = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
-        if beta.ndim == 3:
-            beta = beta[..., None, None]  # [batch, T, num_heads, 1, 1] for broadcasting
-
-        # Log-space with scale: exp(scale * osc_w) for more stable gradients
         osc_term = torch.exp(self.osc_w_scale * self.osc_w)
-        # osc_term shape: [num_heads, head_dim, head_dim] - same as y (without batch)
         damping_param = self.osc_damp
         damping_term = nn.functional.sigmoid(damping_param) if self.damping else damping_param
         damping_term = damping_term / self.delta_t
 
-        output = torch.zeros(batch_size, T, h, d, device=q.device, dtype=orig_dtype)
-        for t in range(T):
-            _q = q[:, t, :, :]
-            _k = k[:, t, :, :]
-            _v = v[:, t, :, :].clone()
-            beta_i = beta[:, t, :]  # [batch, num_heads, 1, 1]
-
-            if self.update_rule == 'delta':
-                _v = _v - torch.einsum('bhd,bhde->bhe', _k, y)
-            # u = kv^T = einsum('bhd,bhrd,bhre->bhdr', k, y, v) -> [batch, num_heads, head_dim, head_dim]
-            u_t = torch.einsum('bhd,bhe->bhde', _k, _v)
-
-            # gradient clipping on u_t (same as parallel_forward)
-            # u_norm = torch.linalg.vector_norm(u_t, dim=-1, keepdim=True)
-            # scale = torch.minimum(self.grad_clip_scale / (u_norm + 1e-6), torch.ones_like(u_norm))
-            # u_t = u_t * scale
-
-            z = z.clone() + self.delta_t * beta_i * u_t - self.delta_t * osc_term * y - self.delta_t * damping_term * z
-            y = y.clone() + self.delta_t * z
-
-            output[:, t, :, :] = torch.einsum('bhd,bhde->bhe', _q, y)
+        if cu_seqlens is not None:
+            output = torch.zeros(q.shape[0], q.shape[1], q.shape[2], device=q.device, dtype=orig_dtype)
+            for b in range(batch_size):
+                seq_start = cu_seqlens[b].item()
+                seq_end = cu_seqlens[b + 1].item()
+                yb, zb = y[b], z[b]  # (H, D, D)
+                for t in range(seq_start, seq_end):
+                    _k = k[t]
+                    _v = v[t].clone()
+                    if self.update_rule == 'delta':
+                        _v = _v - torch.einsum('hd,hde->he', _k, yb)
+                    u_t = torch.einsum('hd,he->hde', _k, _v)
+                    zb = zb + self.delta_t * beta[t, :, None, None] * u_t - self.delta_t * osc_term * yb - self.delta_t * damping_term * zb
+                    yb = yb + self.delta_t * zb
+                    output[t] = torch.einsum('hd,hde->he', q[t], yb).to(orig_dtype)
+                y[b], z[b] = yb, zb
+        else:
+            B, T, h, d = q.shape
+            output = torch.zeros(B, T, h, d, device=q.device, dtype=orig_dtype)
+            beta_b = beta[..., None, None] if beta.ndim == 3 else beta
+            for t in range(T):
+                _k = k[:, t]
+                _v = v[:, t].clone()
+                if self.update_rule == 'delta':
+                    _v = _v - torch.einsum('bhd,bhde->bhe', _k, y)
+                u_t = torch.einsum('bhd,bhe->bhde', _k, _v)
+                z = z + self.delta_t * beta_b[:, t] * u_t - self.delta_t * osc_term * y - self.delta_t * damping_term * z
+                y = y + self.delta_t * z
+                output[:, t] = torch.einsum('bhd,bhde->bhe', q[:, t], y).to(orig_dtype)
 
         final_state = None
         if output_final_state:
             final_state = (y.contiguous(), z.contiguous())
-        return output.to(orig_dtype), final_state
+        return output, final_state
