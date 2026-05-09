@@ -49,28 +49,13 @@ class LinOSS(nn.Module):
 
         self._keep_default_init = True  # Flag to control default initialization in reset_parameters
 
-    def reset_parameters(self):   
-        # Log-space parameterization: freq = exp(osc_w)
-        # Initialize with log-uniform distribution covering multiple scales
+    def reset_parameters(self):
+        # exp parameterization: osc_term = exp(osc_w_scale * osc_w)
+        # Start near zero (DeltaNet regime) and let the model learn oscillation.
+        # exp(-9) ≈ 1.2e-4 keeps Euler stable over long sequences.
         self.osc_w_scale = 1.0
-        
-        # uniformly distributed in log-space
-        # dt=1, seq_len=4096
-        P_min, P_max = 1024, 4096.0
-        log_freq_min = math.log(2 * math.pi / P_max)
-        log_freq_max = math.log(2 * math.pi / P_min)
-
-        # noise_base = (log_freq_max - log_freq_min) / self.head_dim
-
-        # Create linspace for head_dim, then broadcast to full shape
-        init_values = torch.linspace(-10.0, -9.0, self.head_dim**2, device=self.osc_w.device, dtype=self.osc_w.dtype)  # [head_dim]
-        # Add small noise to break symmetry across different heads/ranks
-        noise = 0.05 * torch.randn(self.num_heads, self.head_dim, self.head_dim, device=self.osc_w.device, dtype=self.osc_w.dtype)
-        # Broadcast and add noise
         with torch.no_grad():
-            self.osc_w.copy_(
-                init_values.unsqueeze(0).expand(self.num_heads, -1).reshape(self.num_heads, self.head_dim, self.head_dim) + noise
-            )
+            nn.init.normal_(self.osc_w, mean=-9.0, std=0.5)
 
     def get_osc_frequencies(self):
         """Return actual oscillation frequencies for monitoring.
