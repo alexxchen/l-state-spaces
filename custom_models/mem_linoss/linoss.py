@@ -49,21 +49,21 @@ class LinOSS(nn.Module):
 
         self._keep_default_init = True  # Flag to control default initialization in reset_parameters
 
-    def reset_parameters(self):    
+    def reset_parameters(self):   
         # Log-space parameterization: freq = exp(osc_w)
         # Initialize with log-uniform distribution covering multiple scales
         self.osc_w_scale = 1.0
         
         # uniformly distributed in log-space
         # dt=1, seq_len=4096
-        P_min, P_max = 4.0, 4096.0
+        P_min, P_max = 1024, 4096.0
         log_freq_min = math.log(2 * math.pi / P_max)
         log_freq_max = math.log(2 * math.pi / P_min)
 
         # noise_base = (log_freq_max - log_freq_min) / self.head_dim
 
         # Create linspace for head_dim, then broadcast to full shape
-        init_values = torch.linspace(log_freq_min, log_freq_max, self.head_dim**2, device=self.osc_w.device, dtype=self.osc_w.dtype)  # [head_dim]
+        init_values = torch.linspace(-10.0, -9.0, self.head_dim**2, device=self.osc_w.device, dtype=self.osc_w.dtype)  # [head_dim]
         # Add small noise to break symmetry across different heads/ranks
         noise = 0.05 * torch.randn(self.num_heads, self.head_dim, self.head_dim, device=self.osc_w.device, dtype=self.osc_w.dtype)
         # Broadcast and add noise
@@ -140,13 +140,6 @@ class LinOSS(nn.Module):
             q = l2norm(q)
             k = l2norm(k)
 
-        # varlen inputs from mem_linoss come as (1, N, H, D) / (1, N, H) due to unsqueeze(0)
-        # in get_unpad_data path; squeeze to (N, H, D) / (N, H) for the kernel
-        packed = cu_seqlens is not None and q.dim() == 4
-        if packed:
-            q, k, v = q.squeeze(0), k.squeeze(0), v.squeeze(0)
-            beta = beta.squeeze(0) if beta.dim() == 3 else beta
-
         batch_size = cu_seqlens.numel() - 1 if cu_seqlens is not None else q.shape[0]
 
         y0, z0 = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
@@ -169,9 +162,6 @@ class LinOSS(nn.Module):
             dt=self.delta_t,
             chunk_size=chunk_size,
         )
-
-        if packed:
-            output = output.unsqueeze(0)
 
         final_state = None
         if output_final_state:

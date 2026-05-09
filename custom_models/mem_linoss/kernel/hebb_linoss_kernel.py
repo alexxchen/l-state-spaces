@@ -430,15 +430,34 @@ class _ParallelRNNHebbVarlenTriton(torch.autograd.Function):
 
 
 def fused_hebb_linoss(q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size):
-    """Variable-length parallel RNN with Hebb rule.
+    """Parallel RNN with Hebb rule and a unified (Bsz, N, H, D) input layout.
 
-    q, k, v:    (N, H, D), packed across all sequences
-    beta:       (N, H)
+    q, k, v:    (Bsz, N, H, D)
+    beta:       (Bsz, N, H)
     y0, z0:     (Bsz, H, D, D)
     A, B:       (H, D, D)
-    cu_seqlens: (Bsz + 1,) int32, cumulative sequence lengths (prefix sum starting at 0)
+    cu_seqlens: optional (Bsz_seq + 1,) int32, cumulative sequence lengths.
+        When provided, Bsz must be 1 and N is the total packed length across
+        all sequences (state batch is taken from cu_seqlens).
+        When None, each row in the leading dim is treated as one sequence of
+        length N (a uniform cu_seqlens = [0, N, 2N, ..., Bsz*N] is built).
+
+    Output is returned with shape (Bsz, N, H, D).
     """
     scale = k.shape[-1] ** -0.5
+    Bsz, N, H_, D_ = q.shape
+    q = q.reshape(Bsz * N, H_, D_)
+    k = k.reshape(Bsz * N, H_, D_)
+    v = v.reshape(Bsz * N, H_, D_)
+    beta = beta.reshape(Bsz * N, H_)
+
+    if cu_seqlens is None:
+        cu_seqlens = torch.arange(
+            0, (Bsz + 1) * N, N, dtype=torch.int32, device=q.device
+        )
+    else:
+        assert Bsz == 1, "When cu_seqlens is provided, leading batch dim must be 1."
+
     q = q.contiguous()
     k = k.contiguous()
     v = v.contiguous()
@@ -448,6 +467,8 @@ def fused_hebb_linoss(q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size):
     A = A.contiguous()
     B = B.contiguous()
     cu_seqlens = cu_seqlens.contiguous().to(torch.int32)
-    return _ParallelRNNHebbVarlenTriton.apply(
+    output, y_final, z_final = _ParallelRNNHebbVarlenTriton.apply(
         q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size, scale
     )
+    output = output.reshape(Bsz, N, H_, D_)
+    return output, y_final, z_final

@@ -18,6 +18,7 @@ model:
     use_beta: true
     base_beta: 0.1
     update_rule: delta
+    use_damping: true
 
 decoder:
   mode: last
