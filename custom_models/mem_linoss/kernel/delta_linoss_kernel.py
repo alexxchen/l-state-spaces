@@ -26,53 +26,61 @@ def _linoss_varlen_forward_kernel(
     CHUNK_SIZE: tl.constexpr,
     NUM_CHUNKS_MAX: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    COLS: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    col = pid % D
-    bh = pid // D
+    col_block = pid % (D // COLS)
+    bh = pid // (D // COLS)
     head = bh % H
     batch = bh // H
 
-    offs = tl.arange(0, BLOCK_D)
-    mask = offs < D
+    rows = tl.arange(0, BLOCK_D)
+    cols = col_block * COLS + tl.arange(0, COLS)
+    rmask = rows < D
 
-    state_base = ((batch * H + head) * D + offs) * D + col
-    param_base = (head * D + offs) * D + col
+    # 2D pointers: rows in axis 0, cols in axis 1
+    state_base = ((batch * H + head) * D + rows[:, None]) * D + cols[None, :]
+    param_base = (head * D + rows[:, None]) * D + cols[None, :]
+    state_mask = rmask[:, None]
 
     seq_start = tl.load(cu_seqlens_ptr + batch).to(tl.int32)
     seq_end = tl.load(cu_seqlens_ptr + batch + 1).to(tl.int32)
     T_b = seq_end - seq_start
 
-    y = tl.load(y0_ptr + state_base, mask=mask, other=0.0).to(tl.float32)
-    z = tl.load(z0_ptr + state_base, mask=mask, other=0.0).to(tl.float32)
-    a = tl.load(A_ptr + param_base, mask=mask, other=0.0).to(tl.float32)
-    b = tl.load(B_ptr + param_base, mask=mask, other=0.0).to(tl.float32)
+    y = tl.load(y0_ptr + state_base, mask=state_mask, other=0.0).to(tl.float32)
+    z = tl.load(z0_ptr + state_base, mask=state_mask, other=0.0).to(tl.float32)
+    a = tl.load(A_ptr + param_base, mask=state_mask, other=0.0).to(tl.float32)
+    b = tl.load(B_ptr + param_base, mask=state_mask, other=0.0).to(tl.float32)
+    dt_a = DT * a
+    one_minus_dtb = 1.0 - DT * b
 
     ckpt_chunk_stride = H * D * D
     ckpt_batch_stride = (NUM_CHUNKS_MAX + 1) * ckpt_chunk_stride
     head_stride = D * D
 
-    ckpt_base0 = batch * ckpt_batch_stride + head * head_stride + offs * D + col
-    tl.store(y_check_ptr + ckpt_base0, y, mask=mask)
-    tl.store(z_check_ptr + ckpt_base0, z, mask=mask)
+    ckpt_base0 = batch * ckpt_batch_stride + head * head_stride + rows[:, None] * D + cols[None, :]
+    tl.store(y_check_ptr + ckpt_base0, y, mask=state_mask)
+    tl.store(z_check_ptr + ckpt_base0, z, mask=state_mask)
 
-    for t in tl.range(0, T_b, 1):
+    for t in tl.range(0, T_b, 1, num_stages=2):
         n = seq_start + t
         seq_base = (n * H + head) * D
-        k_t = tl.load(k_ptr + seq_base + offs, mask=mask, other=0.0).to(tl.float32)
+        k_t = tl.load(k_ptr + seq_base + rows, mask=rmask, other=0.0).to(tl.float32)
         q_t = (
-            tl.load(q_ptr + seq_base + offs, mask=mask, other=0.0).to(tl.float32)
+            tl.load(q_ptr + seq_base + rows, mask=rmask, other=0.0).to(tl.float32)
             * SCALE
         )
-        v_t = tl.load(v_ptr + seq_base + col).to(tl.float32)
+        v_t = tl.load(v_ptr + seq_base + cols).to(tl.float32)  # shape (COLS,)
         beta_t = tl.load(beta_ptr + n * H + head).to(tl.float32)
 
-        residual = v_t - tl.sum(k_t * y, axis=0)
-        z = z - DT * a * y + DT * beta_t * k_t * residual - DT * b * z
+        # residual: shape (COLS,)
+        residual = v_t - tl.sum(k_t[:, None] * y, axis=0)
+        # outer product k_t[:, None] * (DT*beta_t*residual)[None, :] -> (BLOCK_D, COLS)
+        z = z * one_minus_dtb - dt_a * y + k_t[:, None] * (DT * beta_t * residual)[None, :]
         y = y + DT * z
 
-        out_t = tl.sum(q_t * y, axis=0)
-        tl.store(out_ptr + seq_base + col, out_t)
+        out_t = tl.sum(q_t[:, None] * y, axis=0)  # shape (COLS,)
+        tl.store(out_ptr + seq_base + cols, out_t)
 
         if ((t + 1) % CHUNK_SIZE == 0) or (t == T_b - 1):
             chunk_idx = tl.cdiv(t + 1, CHUNK_SIZE)
@@ -80,97 +88,18 @@ def _linoss_varlen_forward_kernel(
                 batch * ckpt_batch_stride
                 + chunk_idx * ckpt_chunk_stride
                 + head * head_stride
-                + offs * D
-                + col
+                + rows[:, None] * D
+                + cols[None, :]
             )
-            tl.store(y_check_ptr + ckpt_base_t, y, mask=mask)
-            tl.store(z_check_ptr + ckpt_base_t, z, mask=mask)
+            tl.store(y_check_ptr + ckpt_base_t, y, mask=state_mask)
+            tl.store(z_check_ptr + ckpt_base_t, z, mask=state_mask)
 
-    tl.store(y_out_ptr + state_base, y, mask=mask)
-    tl.store(z_out_ptr + state_base, z, mask=mask)
-
-
-@triton.jit
-def _linoss_varlen_recompute_chunk_kernel(
-    k_ptr,
-    v_ptr,
-    beta_ptr,
-    A_ptr,
-    B_ptr,
-    cu_seqlens_ptr,
-    y_check_ptr,
-    z_check_ptr,
-    y_hist_ptr,
-    z_hist_ptr,
-    chunk_idx,
-    H: tl.constexpr,
-    D: tl.constexpr,
-    DT: tl.constexpr,
-    CHUNK_SIZE: tl.constexpr,
-    NUM_CHUNKS_MAX: tl.constexpr,
-    BLOCK_D: tl.constexpr,
-):
-    pid = tl.program_id(0)
-    col = pid % D
-    bh = pid // D
-    head = bh % H
-    batch = bh // H
-
-    offs = tl.arange(0, BLOCK_D)
-    mask = offs < D
-
-    seq_start = tl.load(cu_seqlens_ptr + batch).to(tl.int32)
-    seq_end = tl.load(cu_seqlens_ptr + batch + 1).to(tl.int32)
-    T_b = seq_end - seq_start
-    chunk_start = chunk_idx * CHUNK_SIZE
-
-    if chunk_start < T_b:
-        remaining = T_b - chunk_start
-        chunk_len = tl.where(remaining < CHUNK_SIZE, remaining, CHUNK_SIZE)
-
-        hist_stride = (CHUNK_SIZE + 1) * D * D
-        hist_base = ((batch * H + head) * hist_stride) + offs * D + col
-
-        ckpt_chunk_stride = H * D * D
-        ckpt_batch_stride = (NUM_CHUNKS_MAX + 1) * ckpt_chunk_stride
-        head_stride = D * D
-        ckpt_base = (
-            batch * ckpt_batch_stride
-            + chunk_idx * ckpt_chunk_stride
-            + head * head_stride
-            + offs * D
-            + col
-        )
-
-        param_base = (head * D + offs) * D + col
-
-        y = tl.load(y_check_ptr + ckpt_base, mask=mask, other=0.0).to(tl.float32)
-        z = tl.load(z_check_ptr + ckpt_base, mask=mask, other=0.0).to(tl.float32)
-        a = tl.load(A_ptr + param_base, mask=mask, other=0.0).to(tl.float32)
-        b = tl.load(B_ptr + param_base, mask=mask, other=0.0).to(tl.float32)
-
-        tl.store(y_hist_ptr + hist_base, y, mask=mask)
-        tl.store(z_hist_ptr + hist_base, z, mask=mask)
-
-        for local_t in tl.range(0, chunk_len, 1):
-            t = chunk_start + local_t
-            n = seq_start + t
-            seq_base = (n * H + head) * D
-            k_t = tl.load(k_ptr + seq_base + offs, mask=mask, other=0.0).to(tl.float32)
-            v_t = tl.load(v_ptr + seq_base + col).to(tl.float32)
-            beta_t = tl.load(beta_ptr + n * H + head).to(tl.float32)
-
-            residual = v_t - tl.sum(k_t * y, axis=0)
-            z = z - DT * a * y + DT * beta_t * k_t * residual - DT * b * z
-            y = y + DT * z
-
-            hist_t_base = hist_base + (local_t + 1) * D * D
-            tl.store(y_hist_ptr + hist_t_base, y, mask=mask)
-            tl.store(z_hist_ptr + hist_t_base, z, mask=mask)
+    tl.store(y_out_ptr + state_base, y, mask=state_mask)
+    tl.store(z_out_ptr + state_base, z, mask=state_mask)
 
 
 @triton.jit
-def _linoss_varlen_backward_chunk_kernel(
+def _linoss_varlen_recompute_backward_chunk_kernel(
     q_ptr,
     k_ptr,
     v_ptr,
@@ -179,8 +108,9 @@ def _linoss_varlen_backward_chunk_kernel(
     B_ptr,
     cu_seqlens_ptr,
     grad_out_ptr,
+    y_check_ptr,
+    z_check_ptr,
     y_hist_ptr,
-    z_hist_ptr,
     gy_end_ptr,
     gz_end_ptr,
     grad_q_ptr,
@@ -197,37 +127,82 @@ def _linoss_varlen_backward_chunk_kernel(
     DT: tl.constexpr,
     SCALE: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,
+    NUM_CHUNKS_MAX: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    COLS: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    col = pid % D
-    bh = pid // D
+    col_block = pid % (D // COLS)
+    bh = pid // (D // COLS)
     head = bh % H
     batch = bh // H
 
-    offs = tl.arange(0, BLOCK_D)
-    mask = offs < D
+    rows = tl.arange(0, BLOCK_D)
+    cols = col_block * COLS + tl.arange(0, COLS)
+    rmask = rows < D
 
-    state_base = ((batch * H + head) * D + offs) * D + col
-    param_base = (head * D + offs) * D + col
+    state_base = ((batch * H + head) * D + rows[:, None]) * D + cols[None, :]
+    param_base = (head * D + rows[:, None]) * D + cols[None, :]
+    state_mask = rmask[:, None]
 
     seq_start = tl.load(cu_seqlens_ptr + batch).to(tl.int32)
     seq_end = tl.load(cu_seqlens_ptr + batch + 1).to(tl.int32)
     T_b = seq_end - seq_start
     chunk_start = chunk_idx * CHUNK_SIZE
 
-    gy = tl.load(gy_end_ptr + state_base, mask=mask, other=0.0).to(tl.float32)
-    gz = tl.load(gz_end_ptr + state_base, mask=mask, other=0.0).to(tl.float32)
+    gy = tl.load(gy_end_ptr + state_base, mask=state_mask, other=0.0).to(tl.float32)
+    gz = tl.load(gz_end_ptr + state_base, mask=state_mask, other=0.0).to(tl.float32)
 
     if chunk_start < T_b:
         remaining = T_b - chunk_start
         chunk_len = tl.where(remaining < CHUNK_SIZE, remaining, CHUNK_SIZE)
 
         hist_stride = (CHUNK_SIZE + 1) * D * D
-        hist_base = ((batch * H + head) * hist_stride) + offs * D + col
+        hist_base = ((batch * H + head) * hist_stride) + rows[:, None] * D + cols[None, :]
 
-        a = tl.load(A_ptr + param_base, mask=mask, other=0.0).to(tl.float32)
-        b = tl.load(B_ptr + param_base, mask=mask, other=0.0).to(tl.float32)
+        ckpt_chunk_stride = H * D * D
+        ckpt_batch_stride = (NUM_CHUNKS_MAX + 1) * ckpt_chunk_stride
+        head_stride = D * D
+        ckpt_base = (
+            batch * ckpt_batch_stride
+            + chunk_idx * ckpt_chunk_stride
+            + head * head_stride
+            + rows[:, None] * D
+            + cols[None, :]
+        )
+
+        a = tl.load(A_ptr + param_base, mask=state_mask, other=0.0).to(tl.float32)
+        b = tl.load(B_ptr + param_base, mask=state_mask, other=0.0).to(tl.float32)
+        dt_a = DT * a
+        one_minus_dtb = 1.0 - DT * b
+        inv_one_minus_dtb = 1.0 / one_minus_dtb
+
+        # ---- Recompute pass: forward through chunk, write y_hist ----
+        y = tl.load(y_check_ptr + ckpt_base, mask=state_mask, other=0.0).to(tl.float32)
+        z = tl.load(z_check_ptr + ckpt_base, mask=state_mask, other=0.0).to(tl.float32)
+        tl.store(y_hist_ptr + hist_base, y, mask=state_mask)
+
+        for local_t in tl.range(0, chunk_len, 1):
+            t = chunk_start + local_t
+            n = seq_start + t
+            seq_base = (n * H + head) * D
+            k_t = tl.load(k_ptr + seq_base + rows, mask=rmask, other=0.0).to(tl.float32)
+            v_t = tl.load(v_ptr + seq_base + cols).to(tl.float32)  # (COLS,)
+            beta_t = tl.load(beta_ptr + n * H + head).to(tl.float32)
+
+            residual = v_t - tl.sum(k_t[:, None] * y, axis=0)  # (COLS,)
+            z = z * one_minus_dtb - dt_a * y + k_t[:, None] * (DT * beta_t * residual)[None, :]
+            y = y + DT * z
+
+            hist_t_base = hist_base + (local_t + 1) * D * D
+            tl.store(y_hist_ptr + hist_t_base, y, mask=state_mask)
+
+        # ---- Backward pass: read y_hist in reverse ----
+        grad_a_acc = tl.zeros((BLOCK_D, COLS), dtype=tl.float32)
+        grad_b_acc = tl.zeros((BLOCK_D, COLS), dtype=tl.float32)
+
+        # y at chunk end is in `y` from the recompute loop
+        y_next = y
 
         for rev_t in tl.range(0, chunk_len, 1):
             local_t = chunk_len - 1 - rev_t
@@ -236,63 +211,67 @@ def _linoss_varlen_backward_chunk_kernel(
             seq_base = (n * H + head) * D
 
             y_prev = tl.load(
-                y_hist_ptr + hist_base + local_t * D * D, mask=mask, other=0.0
-            ).to(tl.float32)
-            z_prev = tl.load(
-                z_hist_ptr + hist_base + local_t * D * D, mask=mask, other=0.0
-            ).to(tl.float32)
-            y_next = tl.load(
-                y_hist_ptr + hist_base + (local_t + 1) * D * D, mask=mask, other=0.0
+                y_hist_ptr + hist_base + local_t * D * D, mask=state_mask, other=0.0
             ).to(tl.float32)
 
-            q_t = tl.load(q_ptr + seq_base + offs, mask=mask, other=0.0).to(tl.float32)
-            k_t = tl.load(k_ptr + seq_base + offs, mask=mask, other=0.0).to(tl.float32)
-            v_t = tl.load(v_ptr + seq_base + col).to(tl.float32)
+            q_t = tl.load(q_ptr + seq_base + rows, mask=rmask, other=0.0).to(tl.float32)
+            k_t = tl.load(k_ptr + seq_base + rows, mask=rmask, other=0.0).to(tl.float32)
+            v_t = tl.load(v_ptr + seq_base + cols).to(tl.float32)  # (COLS,)
             beta_t = tl.load(beta_ptr + n * H + head).to(tl.float32)
-            go = tl.load(grad_out_ptr + seq_base + col).to(tl.float32)
+            go = tl.load(grad_out_ptr + seq_base + cols).to(tl.float32)  # (COLS,)
 
+            # z_prev via single-step inversion
+            dt_beta = DT * beta_t
+            residual = v_t - tl.sum(k_t[:, None] * y_prev, axis=0)  # (COLS,)
+            z_new = (y_next - y_prev) * (1.0 / DT)
+            z_prev = (z_new + dt_a * y_prev - k_t[:, None] * (dt_beta * residual)[None, :]) * inv_one_minus_dtb
+
+            # grad_q: sum across cols within program first, then atomic_add a single (BLOCK_D,)
+            #   contribution to grad_q[n, head, r] = sum_c(go[c] * SCALE * y_next[r, c])
+            grad_q_contrib = tl.sum((SCALE * go)[None, :] * y_next, axis=1)  # (BLOCK_D,)
             tl.atomic_add(
-                grad_q_ptr + seq_base + offs,
-                go * SCALE * y_next,
+                grad_q_ptr + seq_base + rows,
+                grad_q_contrib,
                 sem="relaxed",
-                mask=mask,
+                mask=rmask,
             )
-            gy = gy + go * SCALE * q_t
+            gy = gy + (SCALE * go)[None, :] * q_t[:, None]
 
             gz_total = gz + DT * gy
-            residual = v_t - tl.sum(k_t * y_prev, axis=0)
-            gr = tl.sum(gz_total * (DT * beta_t) * k_t, axis=0)
+            kdot = DT * tl.sum(gz_total * k_t[:, None], axis=0)  # (COLS,)
+            gr = beta_t * kdot  # (COLS,)
 
-            tl.store(grad_v_ptr + seq_base + col, gr)
+            tl.store(grad_v_ptr + seq_base + cols, gr)
             tl.atomic_add(
                 grad_beta_ptr + n * H + head,
-                tl.sum(gz_total * DT * k_t * residual, axis=0),
+                tl.sum(kdot * residual, axis=0),  # scalar
                 sem="relaxed",
             )
+            # grad_k contribution per col: gz_total[r,c]*(dt_beta*residual[c]) - gr[c]*y_prev[r,c]
+            grad_k_contrib = tl.sum(
+                gz_total * (dt_beta * residual)[None, :] - gr[None, :] * y_prev,
+                axis=1,
+            )  # (BLOCK_D,)
             tl.atomic_add(
-                grad_k_ptr + seq_base + offs,
-                gz_total * (DT * beta_t * residual) - gr * y_prev,
+                grad_k_ptr + seq_base + rows,
+                grad_k_contrib,
                 sem="relaxed",
-                mask=mask,
+                mask=rmask,
             )
-            tl.atomic_add(
-                grad_A_ptr + param_base,
-                -DT * gz_total * y_prev,
-                sem="relaxed",
-                mask=mask,
-            )
-            tl.atomic_add(
-                grad_B_ptr + param_base,
-                -DT * gz_total * z_prev,
-                sem="relaxed",
-                mask=mask,
-            )
+            dt_gz = DT * gz_total
+            grad_a_acc += -dt_gz * y_prev
+            grad_b_acc += -dt_gz * z_prev
 
-            gy = gy - DT * a * gz_total - k_t * gr
-            gz = gz_total * (1.0 - DT * b)
+            gy = gy - a * dt_gz - k_t[:, None] * gr[None, :]
+            gz = gz_total * one_minus_dtb
 
-    tl.store(gy_start_ptr + state_base, gy, mask=mask)
-    tl.store(gz_start_ptr + state_base, gz, mask=mask)
+            y_next = y_prev
+
+        tl.atomic_add(grad_A_ptr + param_base, grad_a_acc, sem="relaxed", mask=state_mask)
+        tl.atomic_add(grad_B_ptr + param_base, grad_b_acc, sem="relaxed", mask=state_mask)
+
+    tl.store(gy_start_ptr + state_base, gy, mask=state_mask)
+    tl.store(gz_start_ptr + state_base, gz, mask=state_mask)
 
 
 class _ParallelRNNVarlenTriton(torch.autograd.Function):
@@ -330,7 +309,9 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
         z_checkpoints = torch.empty_like(y_checkpoints)
 
         block_d = triton.next_power_of_2(D_)
-        grid = (Bsz * H_ * D_,)
+        cols_per_program = 16
+        assert D_ % cols_per_program == 0
+        grid = (Bsz * H_ * (D_ // cols_per_program),)
 
         _linoss_varlen_forward_kernel[grid](
             q,
@@ -354,7 +335,8 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
             int(chunk_size),
             int(num_chunks_max),
             BLOCK_D=block_d,
-            num_warps=4,
+            COLS=cols_per_program,
+            num_warps=2,
         )
 
         ctx.save_for_backward(q, k, v, beta, A, B, cu_seqlens, y_checkpoints, z_checkpoints)
@@ -378,7 +360,9 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
         chunk_size = ctx.chunk_size
         num_chunks_max = ctx.num_chunks_max
         block_d = triton.next_power_of_2(D_)
-        grid = (Bsz * H_ * D_,)
+        cols_per_program = 16
+        assert D_ % cols_per_program == 0
+        grid = (Bsz * H_ * (D_ // cols_per_program),)
 
         if grad_output is None:
             grad_output = torch.zeros_like(q)
@@ -409,30 +393,9 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
             device=q.device,
             dtype=torch.float32,
         )
-        z_hist = torch.empty_like(y_hist)
 
         for chunk_idx in range(num_chunks_max - 1, -1, -1):
-            _linoss_varlen_recompute_chunk_kernel[grid](
-                k,
-                v,
-                beta,
-                A,
-                B,
-                cu_seqlens,
-                y_checkpoints,
-                z_checkpoints,
-                y_hist,
-                z_hist,
-                int(chunk_idx),
-                H_,
-                D_,
-                ctx.dt,
-                chunk_size,
-                num_chunks_max,
-                BLOCK_D=block_d,
-                num_warps=4,
-            )
-            _linoss_varlen_backward_chunk_kernel[grid](
+            _linoss_varlen_recompute_backward_chunk_kernel[grid](
                 q,
                 k,
                 v,
@@ -441,8 +404,9 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
                 B,
                 cu_seqlens,
                 grad_output,
+                y_checkpoints,
+                z_checkpoints,
                 y_hist,
-                z_hist,
                 gy_curr,
                 gz_curr,
                 grad_q,
@@ -459,7 +423,9 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
                 ctx.dt,
                 ctx.scale,
                 chunk_size,
+                num_chunks_max,
                 BLOCK_D=block_d,
+                COLS=cols_per_program,
                 num_warps=4,
             )
             gy_curr, gy_next = gy_next, gy_curr

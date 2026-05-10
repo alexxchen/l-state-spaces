@@ -49,6 +49,9 @@ class LinOSS(nn.Module):
 
         self._keep_default_init = True  # Flag to control default initialization in reset_parameters
 
+        # Nyquist upper bound with safety margin
+        self.log_omega_max = math.log(2.0 / self.delta_t * 0.99)
+
     def reset_parameters(self):
         # exp parameterization: osc_term = exp(osc_w_scale * osc_w)
         # Start near zero (DeltaNet regime) and let the model learn oscillation.
@@ -129,7 +132,9 @@ class LinOSS(nn.Module):
 
         y0, z0 = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
-        osc_term = torch.exp(self.osc_w_scale * self.osc_w)
+        log_omega = self.osc_w_scale * self.osc_w
+        log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
+        osc_term = torch.exp(2.0 * log_omega_capped)
         damping_param = self.osc_damp
         damping_term = nn.functional.sigmoid(damping_param) if self.damping else damping_param
         damping_term = damping_term / self.delta_t
@@ -178,7 +183,9 @@ class LinOSS(nn.Module):
 
         y, z = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
-        osc_term = torch.exp(self.osc_w_scale * self.osc_w)
+        log_omega = self.osc_w_scale * self.osc_w
+        log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
+        osc_term = torch.exp(2.0 * log_omega_capped)
         damping_param = self.osc_damp
         damping_term = nn.functional.sigmoid(damping_param) if self.damping else damping_param
         damping_term = damping_term / self.delta_t
