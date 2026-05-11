@@ -21,7 +21,6 @@ class MemLinOSSConfig(PretrainedConfig):
         use_short_conv: bool = True,
         conv_size: int = 4,
         chunk_size: int = 64,
-        use_intra_chunk_kernel: bool = False,
         use_beta: bool = True,
         base_beta: float = 1.0,
         use_output_norm: bool = True,
@@ -60,7 +59,6 @@ class MemLinOSSConfig(PretrainedConfig):
         self.use_short_conv = use_short_conv
         self.conv_size = conv_size
         self.chunk_size = chunk_size
-        self.use_intra_chunk_kernel = use_intra_chunk_kernel
         self.use_beta = use_beta
         self.base_beta = base_beta
         self.use_output_norm = use_output_norm

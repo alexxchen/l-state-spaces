@@ -41,12 +41,11 @@ def sum_norm(x):
 
 class MemLinOSS(nn.Module):
     r"""
-    The layer implementaion for [Parallelizing Linear Transformers with the MLP Rule over Sequence Length](https://arxiv.org/abs/2406.06484).  # noqa:
-    MLPNet was originally proposed in [Linear Transformers Are Secretly Fast Weight Programmers](https://arxiv.org/abs/2102.11174). # noqa
+    The layer implementaion for fast weight programming LinOSS.  # noqa:
 
     Args:
         mode (str, Optional):
-            Which MLPNet kernel to use.
+            Which MemLinOSS kernel to use.
             Currently available: `chunk`, `fused_recurrent`, and `fused_chunk`.
             Default: `chunk`.
         hidden_size (int, Optional):
@@ -104,7 +103,7 @@ class MemLinOSS(nn.Module):
         use_damping: bool = True,
         update_rule: str = 'hebb',
         **kwargs
-    ) -> MLPNet:
+    ) -> MemLinOSS:
         super().__init__()
 
         self.mode = mode
@@ -233,7 +232,6 @@ class MemLinOSS(nn.Module):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        chunk_size: Optional[int] = None,
         **kwargs: Unpack[Dict]
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
         if attention_mask is not None:
@@ -244,8 +242,6 @@ class MemLinOSS(nn.Module):
             )
 
         batch_size, q_len, _ = hidden_states.shape
-        if chunk_size is None:
-            chunk_size = self.chunk_size
         # change to inference mode.
         mode = 'fused_recurrent' if q_len <= 64 else self.mode
 
@@ -321,7 +317,7 @@ class MemLinOSS(nn.Module):
                 output_final_state=use_cache,
                 cu_seqlens=cu_seqlens,
                 use_qk_l2norm_in_kernel=True if self.qk_norm == 'l2' else False,
-                chunk_size=chunk_size,
+                chunk_size=self.chunk_size,
             )
             # o, recurrent_state = chunk_delta_rule(
             #     q=q,

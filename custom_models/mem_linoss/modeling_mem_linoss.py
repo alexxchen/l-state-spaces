@@ -193,11 +193,6 @@ class MemLinOSSModel(MemLinOSSPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        key_dim = int(config.hidden_size * config.expand_k)
-        value_dim = int(config.hidden_size * config.expand_v)
-        head_k_dim = key_dim // config.num_heads
-        head_v_dim = value_dim // config.num_heads
-
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([MemLinOSSBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
         self.norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
@@ -225,7 +220,7 @@ class MemLinOSSModel(MemLinOSSPreTrainedModel):
         **kwargs: Unpack[Dict]
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if output_attentions:
-            warnings.warn("`MLPNetModel` does not `output_attentions` now, setting it to `False`.")
+            warnings.warn("`MemLinOSSModel` does not `output_attentions` now, setting it to `False`.")
             output_attentions = False
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
