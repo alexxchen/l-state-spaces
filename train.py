@@ -2,6 +2,7 @@ from typing import List, Optional, Callable
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
@@ -221,10 +222,16 @@ class SequenceLightningModule(pl.LightningModule):
 
         # Loss
         loss = self.loss(x, y, *w)
+        reg_total, reg_items = self._linoss_regularization() if prefix == "train" else (None, None)
+        if reg_total is not None:
+            loss = loss + reg_total
 
         # Metrics
         metrics = self.metrics(x, y)
         metrics["loss"] = loss
+        if reg_items:
+            for name, value in reg_items.items():
+                metrics[f"reg/{name}"] = value.detach()
         metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
 
         # Calculate torchmetrics: these are accumulated and logged at the end of epochs
@@ -239,6 +246,51 @@ class SequenceLightningModule(pl.LightningModule):
             sync_dist=True,
         )
         return loss
+
+    def _linoss_regularization(self):
+        weight = OmegaConf.select(self.hparams, "optimizer.weight_decay")
+        if weight is None:
+            return None, None
+
+        weight = float(weight)
+        if weight <= 0.0:
+            return None, None
+
+        reg_a = None
+        reg_b = None
+        for module in self.modules():
+            if hasattr(module, "osc_w") and hasattr(module, "osc_w_scale"):
+                log_omega = module.osc_w_scale * module.osc_w
+                if hasattr(module, "log_omega_max"):
+                    log_omega = module.log_omega_max - F.softplus(module.log_omega_max - log_omega)
+                a = torch.exp(2.0 * log_omega)
+                term = (a * a).mean()
+                reg_a = term if reg_a is None else reg_a + term
+
+            if hasattr(module, "osc_damp"):
+                damping_param = module.osc_damp
+                if getattr(module, "damping", False):
+                    b = torch.sigmoid(damping_param + 4.0)
+                else:
+                    b = damping_param
+                if hasattr(module, "delta_t"):
+                    b = b / module.delta_t
+                term = (b - 1.0).pow(2).mean()
+                reg_b = term if reg_b is None else reg_b + term
+
+        if reg_a is None and reg_b is None:
+            return None, None
+
+        reg_items = {}
+        total = 0.0
+        if reg_a is not None:
+            reg_items["osc_A"] = reg_a * weight
+            total = total + reg_a
+        if reg_b is not None:
+            reg_items["osc_B"] = reg_b * weight
+            total = total + reg_b
+
+        return total * weight, reg_items
 
     def on_train_epoch_start(self):
         # Reset training torchmetrics

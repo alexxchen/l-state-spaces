@@ -44,6 +44,9 @@ class LinOSS(nn.Module):
 
         self.osc_w = nn.Parameter(torch.Tensor(num_heads, head_dim, head_dim))
         self.osc_damp = nn.Parameter(torch.zeros(num_heads, head_dim, head_dim), requires_grad=self.damping)
+        # Exclude LinOSS parameters from optimizer weight decay (use custom reg instead)
+        self.osc_w._optim = {"weight_decay": 0.0}
+        self.osc_damp._optim = {"weight_decay": 0.0}
 
         self._keep_default_init = True  # Flag to control default initialization in reset_parameters
 
