@@ -248,7 +248,7 @@ class SequenceLightningModule(pl.LightningModule):
         return loss
 
     def _linoss_regularization(self):
-        weight = OmegaConf.select(self.hparams, "optimizer.weight_decay")
+        weight = OmegaConf.select(self.hparams, "optimizer.linoss_reg_weight")
         if weight is None:
             return None, None
 
@@ -258,39 +258,35 @@ class SequenceLightningModule(pl.LightningModule):
 
         reg_a = None
         reg_b = None
+
         for module in self.modules():
-            if hasattr(module, "osc_w") and hasattr(module, "osc_w_scale"):
-                log_omega = module.osc_w_scale * module.osc_w
-                if hasattr(module, "log_omega_max"):
-                    log_omega = module.log_omega_max - F.softplus(module.log_omega_max - log_omega)
-                a = torch.exp(2.0 * log_omega)
-                term = (a * a).mean()
+            if hasattr(module, "get_A"):
+                a = module.get_A()
+                term = a.pow(2).mean()
                 reg_a = term if reg_a is None else reg_a + term
 
-            if hasattr(module, "osc_damp"):
-                damping_param = module.osc_damp
-                if getattr(module, "damping", False):
-                    b = torch.sigmoid(damping_param + 4.0)
-                else:
-                    b = damping_param
-                if hasattr(module, "delta_t"):
-                    b = b / module.delta_t
+            if hasattr(module, "get_B"):
+                b = module.get_B()
                 term = (b - 1.0).pow(2).mean()
                 reg_b = term if reg_b is None else reg_b + term
 
         if reg_a is None and reg_b is None:
             return None, None
 
-        reg_items = {}
         total = 0.0
-        if reg_a is not None:
-            reg_items["osc_A"] = reg_a * weight
-            total = total + reg_a
-        if reg_b is not None:
-            reg_items["osc_B"] = reg_b * weight
-            total = total + reg_b
+        reg_items = {}
 
-        return total * weight, reg_items
+        if reg_a is not None:
+            total = total + reg_a
+            reg_items["osc_A_raw"] = reg_a.detach()
+            reg_items["osc_A_weighted"] = (weight * reg_a).detach()
+
+        if reg_b is not None:
+            total = total + reg_b
+            reg_items["1-osc_B_raw"] = reg_b.detach()
+            reg_items["1-osc_B_weighted"] = (weight * reg_b).detach()
+
+    return weight * total, reg_items
 
     def on_train_epoch_start(self):
         # Reset training torchmetrics

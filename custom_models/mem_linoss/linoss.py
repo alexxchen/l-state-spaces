@@ -54,10 +54,8 @@ class LinOSS(nn.Module):
         self.log_omega_max = math.log(2.0 / self.delta_t * 0.99)
 
     def reset_parameters(self):
-        # exp parameterization: osc_term = exp(osc_w_scale * osc_w)
         # Start near zero (DeltaNet regime) and let the model learn oscillation.
         # exp(-9) ≈ 1.2e-4 keeps Euler stable over long sequences.
-        self.osc_w_scale = 1.0
         with torch.no_grad():
             nn.init.normal_(self.osc_w, mean=-9.0, std=0.5)
 
@@ -122,6 +120,17 @@ class LinOSS(nn.Module):
 
         return y.to(device=device, dtype=dtype), z.to(device=device, dtype=dtype)
 
+    def get_A(self):
+        log_omega = self.osc_w
+        log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
+        osc_term = torch.exp(2.0 * log_omega_capped)
+        return osc_term
+
+    def get_B(self):
+        damping_term = nn.functional.sigmoid(self.osc_damp) if self.damping else self.osc_damp
+        damping_term = damping_term / self.delta_t
+        return damping_term
+
     def chunk_forward(self, q, k, v, beta, chunk_size, initial_state=None, output_final_state=False, cu_seqlens=None, use_qk_l2norm_in_kernel=False):
         orig_dtype = q.dtype
 
@@ -133,12 +142,8 @@ class LinOSS(nn.Module):
 
         y0, z0 = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
-        log_omega = self.osc_w_scale * self.osc_w
-        log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
-        osc_term = torch.exp(2.0 * log_omega_capped)
-        damping_param = self.osc_damp
-        damping_term = nn.functional.sigmoid(damping_param + 4.0) if self.damping else damping_param
-        damping_term = damping_term / self.delta_t
+        osc_term = self.get_A()
+        damping_param = self.get_B()
 
         # osc_term = torch.zeros_like(self.osc_w)
         # damping_term = torch.ones_like(self.osc_damp)
@@ -187,12 +192,8 @@ class LinOSS(nn.Module):
 
         y, z = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
-        log_omega = self.osc_w_scale * self.osc_w
-        log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
-        osc_term = torch.exp(2.0 * log_omega_capped)
-        damping_param = self.osc_damp
-        damping_term = nn.functional.sigmoid(damping_param) if self.damping else damping_param
-        damping_term = damping_term / self.delta_t
+        osc_term = self.get_A()
+        damping_param = self.get_B()
 
         if cu_seqlens is not None:
             output = torch.zeros(q.shape[0], q.shape[1], q.shape[2], device=q.device, dtype=orig_dtype)

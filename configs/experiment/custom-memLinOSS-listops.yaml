@@ -30,6 +30,7 @@ loader:
 optimizer:
   lr: 0.0001
   weight_decay: 0.5
+  linoss_reg_weight: 0.01
 
 scheduler:
   num_warmup_steps: 1000
