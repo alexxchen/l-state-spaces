@@ -286,7 +286,7 @@ class SequenceLightningModule(pl.LightningModule):
             reg_items["1-osc_B_raw"] = reg_b.detach()
             reg_items["1-osc_B_weighted"] = (weight * reg_b).detach()
 
-    return weight * total, reg_items
+        return weight * total, reg_items
 
     def on_train_epoch_start(self):
         # Reset training torchmetrics
