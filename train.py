@@ -248,7 +248,7 @@ class SequenceLightningModule(pl.LightningModule):
         return loss
 
     def _linoss_regularization(self):
-        weight = OmegaConf.select(self.hparams, "optimizer.linoss_reg_weight")
+        weight = OmegaConf.select(self.hparams, "train.linoss_reg_weight")
         if weight is None:
             return None, None
 
@@ -278,13 +278,11 @@ class SequenceLightningModule(pl.LightningModule):
 
         if reg_a is not None:
             total = total + reg_a
-            reg_items["osc_A_raw"] = reg_a.detach()
-            reg_items["osc_A_weighted"] = (weight * reg_a).detach()
+            reg_items["osc_A"] = (weight * reg_a).detach()
 
         if reg_b is not None:
             total = total + reg_b
-            reg_items["1-osc_B_raw"] = reg_b.detach()
-            reg_items["1-osc_B_weighted"] = (weight * reg_b).detach()
+            reg_items["1-osc_B"] = (weight * reg_b).detach()
 
         return weight * total, reg_items
 

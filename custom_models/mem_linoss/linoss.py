@@ -143,10 +143,7 @@ class LinOSS(nn.Module):
         y0, z0 = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
         osc_term = self.get_A()
-        damping_param = self.get_B()
-
-        # osc_term = torch.zeros_like(self.osc_w)
-        # damping_term = torch.ones_like(self.osc_damp)
+        damping_term = self.get_B()
 
         output, y, z = self.kernel_func(
             q=q,
@@ -193,7 +190,7 @@ class LinOSS(nn.Module):
         y, z = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
         osc_term = self.get_A()
-        damping_param = self.get_B()
+        damping_term = self.get_B()
 
         if cu_seqlens is not None:
             output = torch.zeros(q.shape[0], q.shape[1], q.shape[2], device=q.device, dtype=orig_dtype)
