@@ -17,7 +17,10 @@ model:
     use_short_conv: true
     use_beta: true
     base_beta: 0.1
-
+    update_rule: delta
+    use_damping: true
+    delta_t: 1.0
+    
 decoder:
   mode: last
 

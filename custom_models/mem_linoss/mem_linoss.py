@@ -41,7 +41,7 @@ def sum_norm(x):
 
 class MemLinOSS(nn.Module):
     r"""
-    The layer implementaion for fast weight programming LinOSS.  # noqa:
+    The layer implementaion for fast weight programming LinOSS.
 
     Args:
         mode (str, Optional):

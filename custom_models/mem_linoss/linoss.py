@@ -28,10 +28,8 @@ class LinOSS(nn.Module):
         self.monitor = monitor  # Set to False for torch.compile compatibility
 
         if update_rule == 'hebb':
-            print("Using hebbian rule")
             self.kernel_func = fused_hebb_linoss
         elif update_rule == 'delta':
-            print("Using delta rule")
             self.kernel_func = fused_delta_linoss
 
         # Learnable initial state for y (MAML-style: learn the best initialization)
@@ -132,12 +130,15 @@ class LinOSS(nn.Module):
 
         y0, z0 = self._resolve_initial_state(initial_state, batch_size, q.device, torch.float32)
 
-        log_omega = self.osc_w_scale * self.osc_w
-        log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
-        osc_term = torch.exp(2.0 * log_omega_capped)
+        # log_omega = self.osc_w_scale * self.osc_w
+        # log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
+        # osc_term = torch.exp(2.0 * log_omega_capped)
         damping_param = self.osc_damp
-        damping_term = nn.functional.sigmoid(damping_param) if self.damping else damping_param
+        damping_term = nn.functional.sigmoid(damping_param + 4.0) if self.damping else damping_param
         damping_term = damping_term / self.delta_t
+
+        osc_term = torch.zeros_like(self.osc_w)
+        # damping_term = torch.ones_like(self.osc_damp)
 
         output, y, z = self.kernel_func(
             q=q,

@@ -14,7 +14,7 @@ model:
     max_position_embeddings: 1024
 
 decoder:
-  mode: pool
+  mode: last
 
 dataset:
   grayscale: true

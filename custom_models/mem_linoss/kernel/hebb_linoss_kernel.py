@@ -440,7 +440,7 @@ class _ParallelRNNHebbVarlenTriton(torch.autograd.Function):
         # forward args: q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size, scale
         return (*result, None, None, None, None)
 
-
+@torch.compiler.disable
 def fused_hebb_linoss(q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size):
     """Parallel RNN with Hebb rule and a unified (Bsz, N, H, D) input layout.
 

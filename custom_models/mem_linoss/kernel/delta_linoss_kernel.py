@@ -273,7 +273,6 @@ def _linoss_varlen_recompute_backward_chunk_kernel(
     tl.store(gy_start_ptr + state_base, gy, mask=state_mask)
     tl.store(gz_start_ptr + state_base, gz, mask=state_mask)
 
-
 class _ParallelRNNVarlenTriton(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -444,7 +443,7 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
         # forward args: q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size, scale
         return (*result, None, None, None, None)
 
-
+@torch.compiler.disable
 def fused_delta_linoss(q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size):
     """Parallel RNN with a unified (Bsz, N, H, D) input layout.
 

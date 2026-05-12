@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /pipeline: listops
+  - /pipeline: cifar
   - /model: hf_custom_memLinOSS
   - override /scheduler: cosine_warmup
 
@@ -8,15 +8,15 @@ encoder: hf
 
 model:
   config_kwargs:
-    hidden_size: 64
-    num_hidden_layers: 6
-    num_heads: 2
-    vocab_size: ${dataset.max_vocab}
-    max_position_embeddings: ${dataset.l_max}
+    hidden_size: 512
+    num_hidden_layers: 8
+    num_heads: 8
+    vocab_size: 256
+    max_position_embeddings: 1024
     attn_mode: chunk
     use_short_conv: true
     use_beta: true
-    base_beta: 1.0
+    base_beta: 0.1
     update_rule: delta
     use_damping: true
     delta_t: 1.0
@@ -24,20 +24,22 @@ model:
 decoder:
   mode: last
 
+dataset:
+  grayscale: true
+  tokenize: true
+
 loader:
   batch_size: 50
 
 optimizer:
-  lr: 0.0001
-  weight_decay: 0.5
-
-scheduler:
-  num_warmup_steps: 1000
-  num_training_steps: 80000
+  lr: 0.001
+  weight_decay: 0.1
 
 trainer:
-  max_epochs: 40
-  gradient_clip_val: 1.0
+  max_epochs: 200
+
+scheduler:
+  num_training_steps: 200000
 
 train:
   seed: 2222
