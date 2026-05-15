@@ -113,12 +113,12 @@ def _linoss_varlen_recompute_backward_chunk_kernel(
     y_hist_ptr,
     gy_end_ptr,
     gz_end_ptr,
-    grad_q_ptr,
-    grad_k_ptr,
+    grad_q_part_ptr,
+    grad_k_part_ptr,
     grad_v_ptr,
-    grad_beta_ptr,
-    grad_A_ptr,
-    grad_B_ptr,
+    grad_beta_part_ptr,
+    grad_A_batch_ptr,
+    grad_B_batch_ptr,
     gy_start_ptr,
     gz_start_ptr,
     chunk_idx,
@@ -226,15 +226,12 @@ def _linoss_varlen_recompute_backward_chunk_kernel(
             z_new = (y_next - y_prev) * (1.0 / DT)
             z_prev = (z_new + dt_a * y_prev - k_t[:, None] * (dt_beta * residual)[None, :]) * inv_one_minus_dtb
 
-            # grad_q: sum across cols within program first, then atomic_add a single (BLOCK_D,)
-            #   contribution to grad_q[n, head, r] = sum_c(go[c] * SCALE * y_next[r, c])
             grad_q_contrib = tl.sum((SCALE * go)[None, :] * y_next, axis=1)  # (BLOCK_D,)
-            tl.atomic_add(
-                grad_q_ptr + seq_base + rows,
-                grad_q_contrib,
-                sem="relaxed",
-                mask=rmask,
+            partial_base = (
+                ((batch * H + head) * (D // COLS) + col_block) * CHUNK_SIZE
+                + local_t
             )
+            tl.store(grad_q_part_ptr + partial_base * D + rows, grad_q_contrib, mask=rmask)
             gy = gy + (SCALE * go)[None, :] * q_t[:, None]
 
             gz_total = gz + DT * gy
@@ -242,22 +239,13 @@ def _linoss_varlen_recompute_backward_chunk_kernel(
             gr = beta_t * kdot  # (COLS,)
 
             tl.store(grad_v_ptr + seq_base + cols, gr)
-            tl.atomic_add(
-                grad_beta_ptr + n * H + head,
-                tl.sum(kdot * residual, axis=0),  # scalar
-                sem="relaxed",
-            )
+            tl.store(grad_beta_part_ptr + partial_base, tl.sum(kdot * residual, axis=0))
             # grad_k contribution per col: gz_total[r,c]*(dt_beta*residual[c]) - gr[c]*y_prev[r,c]
             grad_k_contrib = tl.sum(
                 gz_total * (dt_beta * residual)[None, :] - gr[None, :] * y_prev,
                 axis=1,
             )  # (BLOCK_D,)
-            tl.atomic_add(
-                grad_k_ptr + seq_base + rows,
-                grad_k_contrib,
-                sem="relaxed",
-                mask=rmask,
-            )
+            tl.store(grad_k_part_ptr + partial_base * D + rows, grad_k_contrib, mask=rmask)
             dt_gz = DT * gz_total
             grad_a_acc += -dt_gz * y_prev
             grad_b_acc += -dt_gz * z_prev
@@ -267,11 +255,99 @@ def _linoss_varlen_recompute_backward_chunk_kernel(
 
             y_next = y_prev
 
-        tl.atomic_add(grad_A_ptr + param_base, grad_a_acc, sem="relaxed", mask=state_mask)
-        tl.atomic_add(grad_B_ptr + param_base, grad_b_acc, sem="relaxed", mask=state_mask)
+        grad_a_prev = tl.load(grad_A_batch_ptr + state_base, mask=state_mask, other=0.0)
+        grad_b_prev = tl.load(grad_B_batch_ptr + state_base, mask=state_mask, other=0.0)
+        tl.store(grad_A_batch_ptr + state_base, grad_a_prev + grad_a_acc, mask=state_mask)
+        tl.store(grad_B_batch_ptr + state_base, grad_b_prev + grad_b_acc, mask=state_mask)
 
     tl.store(gy_start_ptr + state_base, gy, mask=state_mask)
     tl.store(gz_start_ptr + state_base, gz, mask=state_mask)
+
+
+@triton.jit
+def _linoss_varlen_reduce_col_partials_kernel(
+    cu_seqlens_ptr,
+    grad_q_part_ptr,
+    grad_k_part_ptr,
+    grad_beta_part_ptr,
+    grad_q_ptr,
+    grad_k_ptr,
+    grad_beta_ptr,
+    chunk_idx,
+    H: tl.constexpr,
+    D: tl.constexpr,
+    CHUNK_SIZE: tl.constexpr,
+    NUM_COL_BLOCKS: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    local_t = pid % CHUNK_SIZE
+    bh = pid // CHUNK_SIZE
+    head = bh % H
+    batch = bh // H
+
+    rows = tl.arange(0, BLOCK_D)
+    rmask = rows < D
+
+    seq_start = tl.load(cu_seqlens_ptr + batch).to(tl.int32)
+    seq_end = tl.load(cu_seqlens_ptr + batch + 1).to(tl.int32)
+    T_b = seq_end - seq_start
+    chunk_start = chunk_idx * CHUNK_SIZE
+
+    if local_t < T_b - chunk_start:
+        q_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
+        k_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
+        beta_acc = tl.zeros((), dtype=tl.float32)
+
+        for col_block in tl.range(0, NUM_COL_BLOCKS, 1):
+            partial_base = (
+                ((batch * H + head) * NUM_COL_BLOCKS + col_block) * CHUNK_SIZE
+                + local_t
+            )
+            q_acc += tl.load(grad_q_part_ptr + partial_base * D + rows, mask=rmask, other=0.0)
+            k_acc += tl.load(grad_k_part_ptr + partial_base * D + rows, mask=rmask, other=0.0)
+            beta_acc += tl.load(grad_beta_part_ptr + partial_base)
+
+        n = seq_start + chunk_start + local_t
+        seq_base = (n * H + head) * D
+        tl.store(grad_q_ptr + seq_base + rows, q_acc, mask=rmask)
+        tl.store(grad_k_ptr + seq_base + rows, k_acc, mask=rmask)
+        tl.store(grad_beta_ptr + n * H + head, beta_acc)
+
+
+@triton.jit
+def _linoss_reduce_batch_matrix_grads_kernel(
+    grad_A_batch_ptr,
+    grad_B_batch_ptr,
+    grad_A_ptr,
+    grad_B_ptr,
+    H: tl.constexpr,
+    D: tl.constexpr,
+    BATCH_SIZE: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    COLS: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    col_block = pid % (D // COLS)
+    head = pid // (D // COLS)
+
+    rows = tl.arange(0, BLOCK_D)
+    cols = col_block * COLS + tl.arange(0, COLS)
+    rmask = rows < D
+    state_mask = rmask[:, None]
+
+    grad_a = tl.zeros((BLOCK_D, COLS), dtype=tl.float32)
+    grad_b = tl.zeros((BLOCK_D, COLS), dtype=tl.float32)
+
+    for batch in tl.range(0, BATCH_SIZE, 1):
+        state_base = ((batch * H + head) * D + rows[:, None]) * D + cols[None, :]
+        grad_a += tl.load(grad_A_batch_ptr + state_base, mask=state_mask, other=0.0)
+        grad_b += tl.load(grad_B_batch_ptr + state_base, mask=state_mask, other=0.0)
+
+    param_base = (head * D + rows[:, None]) * D + cols[None, :]
+    tl.store(grad_A_ptr + param_base, grad_a, mask=state_mask)
+    tl.store(grad_B_ptr + param_base, grad_b, mask=state_mask)
+
 
 class _ParallelRNNVarlenTriton(torch.autograd.Function):
     @staticmethod
@@ -361,18 +437,36 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
         block_d = triton.next_power_of_2(D_)
         cols_per_program = 16
         assert D_ % cols_per_program == 0
+        num_col_blocks = D_ // cols_per_program
         grid = (Bsz * H_ * (D_ // cols_per_program),)
+        reduce_col_grid = (Bsz * H_ * chunk_size,)
+        reduce_batch_grid = (H_ * num_col_blocks,)
 
         if grad_output is None:
             grad_output = torch.zeros_like(q)
         grad_output = grad_output.contiguous()
 
-        grad_q = torch.zeros(q.shape, device=q.device, dtype=torch.float32)
-        grad_k = torch.zeros_like(grad_q)
+        grad_q = torch.empty(q.shape, device=q.device, dtype=torch.float32)
+        grad_k = torch.empty_like(grad_q)
         grad_v = torch.empty_like(grad_q)
-        grad_beta = torch.zeros(beta.shape, device=beta.device, dtype=torch.float32)
-        grad_A = torch.zeros(A.shape, device=A.device, dtype=torch.float32)
-        grad_B = torch.zeros(B.shape, device=B.device, dtype=torch.float32)
+        grad_beta = torch.empty(beta.shape, device=beta.device, dtype=torch.float32)
+        grad_A = torch.empty(A.shape, device=A.device, dtype=torch.float32)
+        grad_B = torch.empty(B.shape, device=B.device, dtype=torch.float32)
+        grad_q_part = torch.empty(
+            (Bsz, H_, num_col_blocks, chunk_size, D_),
+            device=q.device,
+            dtype=torch.float32,
+        )
+        grad_k_part = torch.empty_like(grad_q_part)
+        grad_beta_part = torch.empty(
+            (Bsz, H_, num_col_blocks, chunk_size),
+            device=beta.device,
+            dtype=torch.float32,
+        )
+        grad_A_batch = torch.zeros(
+            (Bsz, H_, D_, D_), device=A.device, dtype=torch.float32
+        )
+        grad_B_batch = torch.zeros_like(grad_A_batch)
 
         if grad_y_final is None:
             gy_curr = torch.zeros(
@@ -408,12 +502,12 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
                 y_hist,
                 gy_curr,
                 gz_curr,
-                grad_q,
-                grad_k,
+                grad_q_part,
+                grad_k_part,
                 grad_v,
-                grad_beta,
-                grad_A,
-                grad_B,
+                grad_beta_part,
+                grad_A_batch,
+                grad_B_batch,
                 gy_next,
                 gz_next,
                 int(chunk_idx),
@@ -427,8 +521,37 @@ class _ParallelRNNVarlenTriton(torch.autograd.Function):
                 COLS=cols_per_program,
                 num_warps=4,
             )
+            _linoss_varlen_reduce_col_partials_kernel[reduce_col_grid](
+                cu_seqlens,
+                grad_q_part,
+                grad_k_part,
+                grad_beta_part,
+                grad_q,
+                grad_k,
+                grad_beta,
+                int(chunk_idx),
+                H_,
+                D_,
+                chunk_size,
+                num_col_blocks,
+                BLOCK_D=block_d,
+                num_warps=4,
+            )
             gy_curr, gy_next = gy_next, gy_curr
             gz_curr, gz_next = gz_next, gz_curr
+
+        _linoss_reduce_batch_matrix_grads_kernel[reduce_batch_grid](
+            grad_A_batch,
+            grad_B_batch,
+            grad_A,
+            grad_B,
+            H_,
+            D_,
+            Bsz,
+            BLOCK_D=block_d,
+            COLS=cols_per_program,
+            num_warps=4,
+        )
 
         result = [
             grad_q.to(q.dtype) if needs_grad[0] else None,
@@ -472,6 +595,11 @@ def fused_delta_linoss(q, k, v, beta, y0, z0, A, B, cu_seqlens, dt, chunk_size):
         )
     else:
         assert Bsz == 1, "When cu_seqlens is provided, leading batch dim must be 1."
+
+    if y0.dim() == 3 and z0.dim() == 3:
+        expand_dim = cu_seqlens.numel() - 1
+        y0 = y0.unsqueeze(0).expand(expand_dim, -1, -1, -1)
+        z0 = z0.unsqueeze(0).expand(expand_dim, -1, -1, -1)
 
     q = q.contiguous()
     k = k.contiguous()

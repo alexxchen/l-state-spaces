@@ -9,12 +9,12 @@ encoder: hf
 model:
   config_kwargs:
     hidden_size: 64
-    num_hidden_layers: 6
-    num_heads: 2
+    num_hidden_layers: 9
+    num_heads: 4
     vocab_size: ${dataset.max_vocab}
     max_position_embeddings: ${dataset.l_max}
     attn_mode: chunk
-    use_short_conv: true
+    use_short_conv: false
 
 decoder:
   mode: last
@@ -24,7 +24,7 @@ loader:
 
 optimizer:
   lr: 0.0001
-  weight_decay: 0.5
+  weight_decay: 0.9
 
 scheduler:
   num_warmup_steps: 1000
@@ -34,6 +34,7 @@ scheduler:
 trainer:
   max_epochs: 40
   gradient_clip_val: 1.0
-
+  deterministic: true 
+  
 train:
   seed: 2222

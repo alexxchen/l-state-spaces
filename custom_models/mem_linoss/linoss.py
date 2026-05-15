@@ -153,7 +153,7 @@ class LinOSS(nn.Module):
     def get_B(self):
         damping_term = nn.functional.sigmoid(self.osc_damp) if self.damping else torch.zeros_like(self.osc_damp)
         damping_term = damping_term / self.delta_t
-        return damping_term
+        return torch.ones_like(damping_term)
 
     def chunk_forward(self, q, k, v, beta, chunk_size, initial_state=None, output_final_state=False, cu_seqlens=None, use_qk_l2norm_in_kernel=False):
         orig_dtype = q.dtype
