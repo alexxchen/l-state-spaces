@@ -43,7 +43,7 @@ class LinOSS(nn.Module):
             self.z_init = nn.Parameter(torch.zeros(num_heads, head_dim, head_dim))
 
         self.osc_w = nn.Parameter(torch.Tensor(num_heads, head_dim, head_dim))
-        self.osc_damp = nn.Parameter(torch.zeros(num_heads, head_dim, head_dim), requires_grad=self.damping)
+        self.osc_damp = nn.Parameter(torch.Tensor(num_heads, head_dim, head_dim), requires_grad=self.damping)
         # Exclude LinOSS parameters from optimizer weight decay (use custom reg instead)
         self.osc_w._optim = {"weight_decay": 0.0}
         self.osc_damp._optim = {"weight_decay": 0.0}
@@ -55,9 +55,33 @@ class LinOSS(nn.Module):
 
     def reset_parameters(self):
         # Start near zero (DeltaNet regime) and let the model learn oscillation.
-        # exp(-9) ≈ 1.2e-4 keeps Euler stable over long sequences.
+        T0=256
+        log_freq = math.log(2 * math.pi / T0)
+
+        B0=0.5
+        damp_init = math.log(B0/(1-B0))
+
         with torch.no_grad():
-            nn.init.normal_(self.osc_w, mean=-9.0, std=0.5)
+            nn.init.normal_(self.osc_w, mean=log_freq, std=0.5)
+            nn.init.normal_(self.osc_damp, mean=damp_init, std=0.1)
+        # # uniformly distributed in log-space
+        # # dt=1, seq_len=4096
+        # P_min, P_max = 4, 4096.0
+        # log_freq_min = math.log(2 * math.pi / P_max)
+        # log_freq_max = math.log(2 * math.pi / P_min)
+
+        # noise_base = (log_freq_max - log_freq_min) / (self.head_dim**2)
+        # # Create linspace for head_dim, then broadcast to full shape
+        # init_values = torch.linspace(log_freq_min, log_freq_max, self.head_dim**2, device=self.osc_w.device, dtype=self.osc_w.dtype)  # [head_dim]
+        # # Add small noise to break symmetry across different heads/ranks
+        # noise = noise_base * torch.randn(self.num_heads, self.head_dim, self.head_dim, device=self.osc_w.device, dtype=self.osc_w.dtype)
+        # # Broadcast and add noise
+        # with torch.no_grad():
+        #     self.osc_w.copy_(
+        #         init_values.unsqueeze(0).expand(self.num_heads, -1).reshape(self.num_heads, self.head_dim, self.head_dim) + noise
+        #     )
+
+
 
     def get_osc_frequencies(self):
         """Return actual oscillation frequencies for monitoring.
@@ -124,10 +148,10 @@ class LinOSS(nn.Module):
         log_omega = self.osc_w
         log_omega_capped = self.log_omega_max - F.softplus(self.log_omega_max - log_omega)
         osc_term = torch.exp(2.0 * log_omega_capped)
-        return osc_term
+        return torch.zeros_like(osc_term)
 
     def get_B(self):
-        damping_term = nn.functional.sigmoid(self.osc_damp) if self.damping else self.osc_damp
+        damping_term = nn.functional.sigmoid(self.osc_damp) if self.damping else torch.zeros_like(self.osc_damp)
         damping_term = damping_term / self.delta_t
         return damping_term
 

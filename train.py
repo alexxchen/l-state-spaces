@@ -248,12 +248,13 @@ class SequenceLightningModule(pl.LightningModule):
         return loss
 
     def _linoss_regularization(self):
-        weight = OmegaConf.select(self.hparams, "train.linoss_reg_weight")
-        if weight is None:
-            return None, None
+        lambda_a = OmegaConf.select(self.hparams, "train.linoss_reg.a_weight")
+        lambda_b = OmegaConf.select(self.hparams, "train.linoss_reg.b_weight")
 
-        weight = float(weight)
-        if weight <= 0.0:
+        lambda_a = float(lambda_a) if lambda_a is not None else 0.0
+        lambda_b = float(lambda_b) if lambda_b is not None else 0.0
+
+        if lambda_a <= 0.0 and lambda_b <= 0.0:
             return None, None
 
         reg_a = None
@@ -262,12 +263,12 @@ class SequenceLightningModule(pl.LightningModule):
         for module in self.modules():
             if hasattr(module, "get_A"):
                 a = module.get_A()
-                term = a.pow(2).mean()
+                term = a.pow(2).sum()
                 reg_a = term if reg_a is None else reg_a + term
 
             if hasattr(module, "get_B"):
                 b = module.get_B()
-                term = (b - 1.0).pow(2).mean()
+                term = (b - 1.0).pow(2).sum()
                 reg_b = term if reg_b is None else reg_b + term
 
         if reg_a is None and reg_b is None:
@@ -277,14 +278,18 @@ class SequenceLightningModule(pl.LightningModule):
         reg_items = {}
 
         if reg_a is not None:
-            total = total + reg_a
-            reg_items["osc_A"] = (weight * reg_a).detach()
+            if lambda_a > 0.0:
+                total = total + lambda_a * reg_a
+            reg_items["osc_A_raw"] = reg_a.detach()
+            reg_items["osc_A_weighted"] = (lambda_a * reg_a).detach()
 
         if reg_b is not None:
-            total = total + reg_b
-            reg_items["1-osc_B"] = (weight * reg_b).detach()
+            if lambda_b > 0.0:
+                total = total + lambda_b * reg_b
+            reg_items["1-osc_B_raw"] = reg_b.detach()
+            reg_items["1-osc_B_weighted"] = (lambda_b * reg_b).detach()
 
-        return weight * total, reg_items
+        return total, reg_items
 
     def on_train_epoch_start(self):
         # Reset training torchmetrics
