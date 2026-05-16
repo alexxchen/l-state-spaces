@@ -3,9 +3,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from contextlib import nullcontext
-from fla.modules.l2norm import l2norm
+# from fla.modules.l2norm import l2norm
 from .kernel.hebb_linoss_kernel import fused_hebb_linoss
 from .kernel.delta_linoss_kernel import fused_delta_linoss
+
+def l2norm(x, eps=1e-6):
+    x_fp32 = x.float()
+    norm = torch.norm(x_fp32, p=2, dim=-1, keepdim=True)
+    y = x_fp32 / (norm + eps)
+    return y.to(x.dtype)
 
 class LinOSS(nn.Module):
     def __init__(self, num_heads: int, 
